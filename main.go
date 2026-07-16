@@ -1,8 +1,7 @@
 // inhomo：明文 HTTP 出境泄露审计守护进程。
 //
-// 已实现到工单 T02：订阅 mihomo /logs 流，实时识别「明文 HTTP 泄露事件」
-// （明文 HTTP 连接 + 经出境节点中转）并打印到终端；非泄露、非连接日志跳过。
-// 落盘（T03）与终端聚合摘要（T04）为后续工单。
+// 已实现到工单 T03：订阅 mihomo /logs 流，实时识别「明文 HTTP 泄露事件」并打印到终端；
+// 指定 -out 时把每个事件追加写入 JSONL（原始层，一条不漏）。终端聚合摘要（T04）为后续工单。
 package main
 
 import (
@@ -17,6 +16,7 @@ import (
 
 	"github.com/xunull/inhomo/internal/detect"
 	"github.com/xunull/inhomo/internal/logstream"
+	"github.com/xunull/inhomo/internal/sink"
 )
 
 func main() {
@@ -24,9 +24,23 @@ func main() {
 	secret := flag.String("secret", "", "external-controller 的 secret（未开启鉴权则留空）")
 	level := flag.String("level", "info", "订阅的日志级别；连接日志需要 info")
 	httpPortsFlag := flag.String("http-ports", "80", "视为明文 HTTP 的目的端口集（逗号分隔）")
+	outPath := flag.String("out", "", "JSONL 输出文件路径（留空则只打印到终端、不落盘）")
 	flag.Parse()
 
 	httpPorts := parseHTTPPorts(*httpPortsFlag)
+
+	// 可选 JSONL 落盘：每个泄露事件追加写一行（原始层，一条不漏）。
+	var writer *sink.JSONLWriter
+	if *outPath != "" {
+		f, err := os.OpenFile(*outPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[inhomo] 无法打开输出文件 %s：%v\n", *outPath, err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		writer = sink.NewJSONLWriter(f)
+		fmt.Fprintf(os.Stderr, "[inhomo] 泄露事件将追加写入 %s\n", *outPath)
+	}
 
 	// SIGINT / SIGTERM 触发优雅退出（取消 ctx，Run 随即返回）。
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -57,8 +71,14 @@ func main() {
 		if !isLeak {
 			return
 		}
+		now := time.Now()
 		fmt.Printf("%s  明文HTTP泄露  %s:%d  →  %s [%s]  规则:%s\n",
-			time.Now().Format("15:04:05"), leak.Host, leak.Port, leak.Node, leak.Region, leak.Rule)
+			now.Format("15:04:05"), leak.Host, leak.Port, leak.Node, leak.Region, leak.Rule)
+		if writer != nil {
+			if err := writer.Write(sink.NewRecord(leak, now)); err != nil {
+				fmt.Fprintf(os.Stderr, "[inhomo] 写 JSONL 失败：%v\n", err)
+			}
+		}
 	}
 
 	err := client.Run(ctx, *level, handle)
