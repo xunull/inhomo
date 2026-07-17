@@ -22,7 +22,7 @@ import (
 )
 
 func main() {
-	controller := flag.String("controller", "127.0.0.1:9090", "mihomo external-controller 地址（host:port，可带 http:// 前缀）")
+	controller := flag.String("controller", "127.0.0.1:9090", "mihomo external-controller：TCP 如 127.0.0.1:9090，或 Unix socket 如 unix:///tmp/verge/verge-mihomo.sock")
 	secret := flag.String("secret", "", "external-controller 的 secret（未开启鉴权则留空）")
 	level := flag.String("level", "info", "订阅的日志级别；连接日志需要 info")
 	httpPortsFlag := flag.String("http-ports", "80", "视为明文 HTTP 的目的端口集（逗号分隔）")

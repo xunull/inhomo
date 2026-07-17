@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -41,20 +42,46 @@ type Client struct {
 	http *http.Client
 }
 
-// New 归一化地址（补 http:// 前缀、去尾部斜杠）并返回 Client。
+// New 返回一个 Client。controller 支持两种形式：
+//   - TCP：  "127.0.0.1:9090" / "http://127.0.0.1:9090"
+//   - Unix： "unix:///tmp/verge/verge-mihomo.sock"（Clash Verge Rev 等只开 socket 的场景）
 func New(controller, secret string) *Client {
+	c := &Client{
+		Secret:         secret,
+		initialBackoff: 1 * time.Second,
+		maxBackoff:     30 * time.Second,
+	}
+	if path, ok := unixSocketPath(controller); ok {
+		// Unix socket：请求 URL 用占位 host，实际由 Transport 拨到 socket。
+		c.BaseURL = "http://localhost"
+		c.http = &http.Client{Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", path)
+			},
+		}}
+		return c
+	}
 	base := controller
 	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
 		base = "http://" + base
 	}
-	base = strings.TrimRight(base, "/")
-	return &Client{
-		BaseURL:        base,
-		Secret:         secret,
-		initialBackoff: 1 * time.Second,
-		maxBackoff:     30 * time.Second,
-		http:           &http.Client{}, // 流式请求，不设整体超时
+	c.BaseURL = strings.TrimRight(base, "/")
+	c.http = &http.Client{} // 流式请求，不设整体超时
+	return c
+}
+
+// unixSocketPath 识别 "unix:///path" / "unix:/path" 形式，返回 socket 文件路径。
+func unixSocketPath(controller string) (string, bool) {
+	for _, pfx := range []string{"unix://", "unix:"} {
+		if strings.HasPrefix(controller, pfx) {
+			path := strings.TrimPrefix(controller, pfx)
+			if !strings.HasPrefix(path, "/") {
+				path = "/" + path
+			}
+			return path, true
+		}
 	}
+	return "", false
 }
 
 // Run 持续订阅日志流：
