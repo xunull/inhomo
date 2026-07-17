@@ -13,7 +13,7 @@ type ConnLog struct {
 	Host    string // 目的 host（域名或 IP；IPv6 形如 [::1]）
 	Port    int    // 目的端口
 	Rule    string // 命中规则文本，如 "DomainKeyword(example)"；specialProxy / 无规则时可能为空或说明串
-	Node    string // 出境代理链/节点名，如 "🇺🇸 US-02"、"DIRECT"、"GLOBAL"、"REJECT"
+	Node    string // 出境节点：已从「分组名[真实节点|倍率]」解析出的末端节点，如 "🇺🇸美国HY2-07"、"DIRECT"
 }
 
 // LeakEvent 是一次「明文 HTTP 泄露事件」。TS 由消费方在收到时戳（保持 Parse/Classify 纯粹）。
@@ -63,6 +63,10 @@ func Parse(line string) (ConnLog, bool) {
 	if node == "" {
 		return ConnLog{}, false
 	}
+	node = effectiveNode(node) // 从「分组名[真实节点|倍率]」取末端出境节点
+	if node == "" {
+		return ConnLog{}, false
+	}
 
 	// 4. dst = tail 里 --> 之后的第一个 token（host:port 无空格）；其余是 rule 说明
 	//    （specialProxy 无 rule 时 Cut 未命中，dst=middle、ruleText=""）。
@@ -99,6 +103,28 @@ func ParsePort(s string) (int, bool) {
 		return 0, false
 	}
 	return p, true
+}
+
+// effectiveNode 从 mihomo 的链路串里取出真正的末端出境节点：
+//
+//	"分组名[真实节点]" → "真实节点"；嵌套 "A[B[C]]" → "C"；无括号则原样返回（去空白）。
+//
+// '['/']' 均为单字节 ASCII，按字节定位对 UTF-8 安全。刻意**不**去除节点名里的 "|倍率"——
+// 真实订阅的节点名常自带 '|'（如 "🇭🇰香港|IEPL|01"），截断会误伤，故原样保留节点名。
+func effectiveNode(raw string) string {
+	s := strings.TrimSpace(raw)
+	for {
+		open := strings.LastIndexByte(s, '[')
+		if open < 0 {
+			break
+		}
+		end := strings.IndexByte(s[open:], ']')
+		if end < 0 {
+			break
+		}
+		s = s[open+1 : open+end]
+	}
+	return strings.TrimSpace(s)
 }
 
 // Classify 判定一个 ConnLog 是否为明文 HTTP 泄露事件：

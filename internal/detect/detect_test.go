@@ -143,3 +143,62 @@ func TestRegion(t *testing.T) {
 		}
 	}
 }
+
+// TestParseClassify_realChainFormat 用真机采集的链路格式「分组名[真实节点|倍率]」验证判定。
+func TestParseClassify_realChainFormat(t *testing.T) {
+	cases := []struct {
+		name   string
+		line   string
+		isLeak bool
+		node   string // 期望的出境节点（末端）
+		region string
+	}{
+		{
+			name:   "分组[DIRECT] 80端口 → 非泄露（曾误报的真机 bug）",
+			line:   "[TCP] 198.18.0.1:1(app) --> plain.cn:80 match GeoIP(CN) using 🎯 全球直连[DIRECT]",
+			isLeak: false,
+		},
+		{
+			name:   "分组[节点|倍率] 80端口 → 泄露，取末端节点(名字含|倍率原样保留)+地区",
+			line:   "[TCP] 198.18.0.1:2(app) --> plain.us:80 match DomainKeyword(x) using 🚀 节点选择[🇺🇸美国HY2-07|1.0X]",
+			isLeak: true, node: "🇺🇸美国HY2-07|1.0X", region: "US",
+		},
+		{
+			name:   "真机 443 经代理 → 非泄露",
+			line:   "[TCP] 198.18.0.1:64245(gh) --> api.github.com:443 match DomainKeyword(github) using 🚀 节点选择[🇺🇸美国HY2-07|1.0X]",
+			isLeak: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cl, ok := Parse(c.line)
+			if !ok {
+				t.Fatalf("Parse 失败：%q", c.line)
+			}
+			leak, isLeak := Classify(cl, ports80)
+			if isLeak != c.isLeak {
+				t.Fatalf("isLeak=%v，期望 %v（解析出的 node=%q）", isLeak, c.isLeak, cl.Node)
+			}
+			if c.isLeak && (leak.Node != c.node || leak.Region != c.region) {
+				t.Fatalf("出境节点/地区不符：node=%q region=%q，期望 %q/%q", leak.Node, leak.Region, c.node, c.region)
+			}
+		})
+	}
+}
+
+// TestEffectiveNode 直接覆盖链路末端节点提取。
+func TestEffectiveNode(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"🎯 全球直连[DIRECT]", "DIRECT"},
+		{"🚀 节点选择[🇺🇸美国HY2-07|1.0X]", "🇺🇸美国HY2-07|1.0X"}, // 保留节点名(含 |倍率)
+		{"A[B[REJECT]]", "REJECT"},
+		{"🇺🇸 US-02", "🇺🇸 US-02"}, // 无括号，原样
+		{"DIRECT", "DIRECT"},
+		{"分组[🇭🇰香港|IEPL|01]", "🇭🇰香港|IEPL|01"}, // 名字自带 | 不被截断
+	}
+	for _, c := range cases {
+		if got := effectiveNode(c.in); got != c.want {
+			t.Errorf("effectiveNode(%q)=%q，期望 %q", c.in, got, c.want)
+		}
+	}
+}
