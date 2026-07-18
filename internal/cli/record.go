@@ -23,9 +23,14 @@ func newRecordCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  runRecord,
 	}
-	cmd.Flags().String(flagLevel, "info", "订阅的日志级别；连接日志需要 info")
-	cmd.Flags().String("db", "", "DuckDB 库文件路径（默认 ~/.inhomo/connections.duckdb）")
+	addRecordFlags(cmd)
 	return cmd
+}
+
+// addRecordFlags 注册 record 与 serve 共用的 flag（订阅级别 + 库路径）。
+func addRecordFlags(cmd *cobra.Command) {
+	cmd.Flags().String(flagLevel, "info", "订阅的日志级别；连接日志需要 info")
+	cmd.Flags().String(flagDB, "", "DuckDB 库文件路径（默认 ~/.inhomo/connections.duckdb）")
 }
 
 // resolveDBPath 计算最终库路径：空 → 默认 ~/.inhomo/connections.duckdb；"~/" 前缀 → 展开到 home。
@@ -40,28 +45,40 @@ func resolveDBPath(p, home string) string {
 	}
 }
 
-func runRecord(cmd *cobra.Command, _ []string) error {
+// openStore 解析 --db、建目录、打开 DuckDB。record 与 serve 共用。
+func openStore(cmd *cobra.Command) (*store.Store, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("无法确定 home 目录：%w", err)
+		return nil, fmt.Errorf("无法确定 home 目录：%w", err)
 	}
-	dbFlag, _ := cmd.Flags().GetString("db")
+	dbFlag, _ := cmd.Flags().GetString(flagDB)
 	dbPath := resolveDBPath(dbFlag, home)
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return fmt.Errorf("创建目录 %s：%w", filepath.Dir(dbPath), err)
+		return nil, fmt.Errorf("创建目录 %s：%w", filepath.Dir(dbPath), err)
 	}
-
 	st, err := store.Open(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(os.Stderr, "[inhomo] 连接事件库：%s\n", dbPath)
+	return st, nil
+}
+
+func runRecord(cmd *cobra.Command, _ []string) error {
+	st, err := openStore(cmd)
 	if err != nil {
 		return err
 	}
 	defer st.Close() // 退出前落地剩余缓冲
-	fmt.Fprintf(os.Stderr, "[inhomo] 连接事件将写入 DuckDB：%s\n", dbPath)
 
-	// SIGINT / SIGTERM 触发优雅退出。
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	return recordInto(ctx, cmd, st, "已连接 /logs，开始记录连接事件…")
+}
+
+// recordInto 订阅 /logs 把连接事件写入 st，并定期 flush；阻塞到 ctx 取消。record 与 serve 共用。
+func recordInto(ctx context.Context, cmd *cobra.Command, st *store.Store, connectedMsg string) error {
 	// 定期 flush，让 appender 缓冲落地、数据可查（关闭后 Flush 为无操作）。
 	go func() {
 		t := time.NewTicker(5 * time.Second)
@@ -78,12 +95,12 @@ func runRecord(cmd *cobra.Command, _ []string) error {
 		}
 	}()
 
-	client, level := newClient(cmd, "已连接 /logs，开始记录连接事件…")
+	client, level := newClient(cmd, connectedMsg)
 
 	const statsInterval = 10 * time.Second
 	var recorded, skipped int
 	var lastStats time.Time
-	err = client.Run(ctx, level, func(msg logstream.LogMessage) {
+	err := client.Run(ctx, level, func(msg logstream.LogMessage) {
 		cl, ok := detect.Parse(msg.Payload)
 		if !ok {
 			skipped++

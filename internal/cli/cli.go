@@ -17,6 +17,8 @@ const (
 	flagController = "controller"
 	flagSecret     = "secret"
 	flagLevel      = "level"
+	flagDB         = "db"
+	flagAddr       = "addr"
 )
 
 func newRootCmd() *cobra.Command {
@@ -34,6 +36,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newAuditCmd())
 	root.AddCommand(newLogsCmd())
 	root.AddCommand(newRecordCmd())
+	root.AddCommand(newServeCmd())
 	return root
 }
 
