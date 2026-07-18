@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,12 +24,32 @@ func newRecordCmd() *cobra.Command {
 		RunE:  runRecord,
 	}
 	cmd.Flags().String(flagLevel, "info", "订阅的日志级别；连接日志需要 info")
-	cmd.Flags().String("db", "inhomo.duckdb", "DuckDB 数据库文件路径")
+	cmd.Flags().String("db", "", "DuckDB 库文件路径（默认 ~/.inhomo/connections.duckdb）")
 	return cmd
 }
 
+// resolveDBPath 计算最终库路径：空 → 默认 ~/.inhomo/connections.duckdb；"~/" 前缀 → 展开到 home。
+func resolveDBPath(p, home string) string {
+	switch {
+	case p == "":
+		return filepath.Join(home, ".inhomo", "connections.duckdb")
+	case strings.HasPrefix(p, "~/"):
+		return filepath.Join(home, p[2:])
+	default:
+		return p
+	}
+}
+
 func runRecord(cmd *cobra.Command, _ []string) error {
-	dbPath, _ := cmd.Flags().GetString("db")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("无法确定 home 目录：%w", err)
+	}
+	dbFlag, _ := cmd.Flags().GetString("db")
+	dbPath := resolveDBPath(dbFlag, home)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return fmt.Errorf("创建目录 %s：%w", filepath.Dir(dbPath), err)
+	}
 
 	st, err := store.Open(dbPath)
 	if err != nil {
