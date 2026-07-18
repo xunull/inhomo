@@ -33,6 +33,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(newAuditCmd())
 	root.AddCommand(newLogsCmd())
+	root.AddCommand(newRecordCmd())
 	return root
 }
 
@@ -44,16 +45,20 @@ func Execute() {
 	}
 }
 
-// newClient 按命令的 flag 建好 logstream 客户端、装上通用的重连提示，并返回订阅级别。
-// 各子命令自行设置 OnConnect 与启动提示（文案不同），共享连接与重连逻辑。
-func newClient(cmd *cobra.Command) (*logstream.Client, string) {
+// newClient 按命令的 flag 建好 logstream 客户端，装上连接成功提示（各命令文案不同，经 connectedMsg 传入）、
+// 通用重连提示，并打印启动行；返回客户端与订阅级别。audit/logs/record 共享这套连接脚手架。
+func newClient(cmd *cobra.Command, connectedMsg string) (*logstream.Client, string) {
 	controller, _ := cmd.Flags().GetString(flagController)
 	secret, _ := cmd.Flags().GetString(flagSecret)
 	level, _ := cmd.Flags().GetString(flagLevel)
 
 	client := logstream.New(controller, secret)
+	client.OnConnect = func() {
+		fmt.Fprintf(os.Stderr, "[inhomo] %s\n", connectedMsg)
+	}
 	client.OnReconnect = func(wait time.Duration) {
 		fmt.Fprintf(os.Stderr, "[inhomo] 连接断开，%s 后重连…\n", wait)
 	}
+	fmt.Fprintf(os.Stderr, "[inhomo] 连接 %s 的 /logs?level=%s …\n", client.BaseURL, level)
 	return client, level
 }

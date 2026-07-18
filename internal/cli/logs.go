@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/signal"
 	"syscall"
 
@@ -27,12 +26,7 @@ func runLogs(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client, level := newClient(cmd)
-	client.OnConnect = func() {
-		fmt.Fprintln(os.Stderr, "[inhomo] 已连接 /logs，原样输出（Ctrl-C 退出）…")
-	}
-	fmt.Fprintf(os.Stderr, "[inhomo] 连接 %s 的 /logs?level=%s …\n", client.BaseURL, level)
-
+	client, level := newClient(cmd, "已连接 /logs，原样输出（Ctrl-C 退出）…")
 	return client.Run(ctx, level, func(msg logstream.LogMessage) {
 		fmt.Println(formatLogLine(msg))
 	})

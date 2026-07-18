@@ -56,15 +56,7 @@ func runAudit(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client, level := newClient(cmd)
-	client.OnConnect = func() {
-		fmt.Fprintln(os.Stderr, "[inhomo] 已连接 /logs，开始识别明文 HTTP 泄露…")
-	}
-
-	// 已核对 mihomo log 包：事件先无条件入 logCh 再按全局 level 决定是否打到 stdout，
-	// 故 /logs?level=info 的订阅与 mihomo 全局 log-level 无关，无需用户改配置。
-	fmt.Fprintf(os.Stderr, "[inhomo] 连接 %s 的 /logs?level=%s …（mihomo 按此级别推送日志，与其全局 log-level 设置无关）\n",
-		client.BaseURL, level)
+	client, level := newClient(cmd, "已连接 /logs，开始识别明文 HTTP 泄露…")
 
 	// skipped：非连接日志或无法解析的行计数（Parse/Classify 在 Run 的同一 goroutine 里被同步调用，无并发）。
 	const statsInterval = 10 * time.Second
