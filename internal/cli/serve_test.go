@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func TestParseSince(t *testing.T) {
+func TestParseDur(t *testing.T) {
 	cases := []struct {
 		in      string
 		want    time.Duration
@@ -20,13 +20,13 @@ func TestParseSince(t *testing.T) {
 		{"-5d", 0, true}, // 负天数应报错，而非静默全量
 	}
 	for _, c := range cases {
-		got, err := parseSince(c.in)
+		got, err := parseDur(c.in)
 		if (err != nil) != c.wantErr {
-			t.Errorf("parseSince(%q) err=%v，wantErr=%v", c.in, err, c.wantErr)
+			t.Errorf("parseDur(%q) err=%v，wantErr=%v", c.in, err, c.wantErr)
 			continue
 		}
 		if !c.wantErr && got != c.want {
-			t.Errorf("parseSince(%q)=%v，期望 %v", c.in, got, c.want)
+			t.Errorf("parseDur(%q)=%v，期望 %v", c.in, got, c.want)
 		}
 	}
 }

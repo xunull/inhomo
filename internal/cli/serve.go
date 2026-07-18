@@ -84,15 +84,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	return recordErr
 }
 
-// parseSince 解析相对时长：空 → 0（全量）；支持 "7d"（天）与 Go 时长（"24h"/"90m" 等）。
-func parseSince(s string) (time.Duration, error) {
+// parseDur 解析相对时长（用于 since 与 bucket）：空 → 0；支持 "7d"（天）与 Go 时长（"24h"/"90m" 等）。
+func parseDur(s string) (time.Duration, error) {
 	if s == "" {
 		return 0, nil
 	}
 	if strings.HasSuffix(s, "d") {
 		days, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
 		if err != nil || days < 0 {
-			return 0, fmt.Errorf("无效的 since %q", s)
+			return 0, fmt.Errorf("无效的时长 %q", s)
 		}
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
@@ -111,7 +111,7 @@ func registerRoutes(app *fiber.App, st *store.Store) {
 
 	// /api/aggregate?by=host&since=24h&limit=20 —— 按维度 top-N。
 	app.Get("/api/aggregate", func(c *fiber.Ctx) error {
-		since, err := parseSince(c.Query("since"))
+		since, err := parseDur(c.Query("since"))
 		if err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
@@ -124,5 +124,22 @@ func registerRoutes(app *fiber.App, st *store.Store) {
 			return c.Status(code).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.JSON(rows)
+	})
+
+	// /api/timeseries?since=1h&bucket=5m —— 按时间桶的连接数。
+	app.Get("/api/timeseries", func(c *fiber.Ctx) error {
+		since, err := parseDur(c.Query("since"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		bucket, err := parseDur(c.Query("bucket"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		pts, err := st.TimeSeries(since, bucket)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(pts)
 	})
 }

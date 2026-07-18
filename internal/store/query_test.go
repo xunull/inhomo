@@ -119,3 +119,57 @@ func TestStore_aggregate(t *testing.T) {
 		t.Fatalf("坏维度应 ErrBadDimension，得 %v", err)
 	}
 }
+
+func TestStore_timeseries(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "ts.duckdb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// 空库 → 空序列、不报错。
+	if pts, err := s.TimeSeries(time.Hour, time.Minute); err != nil || len(pts) != 0 {
+		t.Fatalf("空库应返回空序列，得 %+v（err %v）", pts, err)
+	}
+
+	base := time.Now()
+	add := func(ago time.Duration) {
+		if err := s.Add(Event{TS: base.Add(-ago), Host: "h", Port: 443, Node: "N", Process: "p", Network: "TCP", Region: "US"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(0)
+	add(30 * time.Second) // 与 now 同桶（近 1 分钟）
+	add(20 * time.Minute) // 20 分钟前 → 另一个桶
+	add(90 * time.Minute) // 90 分钟前 → 在 1h 窗外
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	pts, err := s.TimeSeries(time.Hour, time.Minute) // 近 1h，1m 桶
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 窗口内总数应为 3（90min 前那条被排除）
+	var total int64
+	for _, p := range pts {
+		total += p.Count
+	}
+	if total != 3 {
+		t.Fatalf("窗口内总数=%d，期望 3（应排除 90min 前）", total)
+	}
+	// 至少 2 个桶（20min 前那条独立成桶）
+	if len(pts) < 2 {
+		t.Fatalf("应至少 2 个时间桶，得 %d：%+v", len(pts), pts)
+	}
+	// 时间升序
+	for i := 1; i < len(pts); i++ {
+		if !pts[i].TS.After(pts[i-1].TS) {
+			t.Fatalf("时间应升序：%+v", pts)
+		}
+	}
+	// 极小窗不报错
+	if _, err := s.TimeSeries(time.Second, time.Second); err != nil {
+		t.Fatalf("极小窗应无错：%v", err)
+	}
+}

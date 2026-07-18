@@ -119,3 +119,40 @@ func (s *Store) Aggregate(by string, since time.Duration, limit int) ([]AggRow, 
 	}
 	return out, rows.Err()
 }
+
+// TSPoint 是时间序列的一个点：桶起始时刻 + 该桶内连接数。
+type TSPoint struct {
+	TS    time.Time `json:"ts"`
+	Count int64     `json:"count"`
+}
+
+// TimeSeries 把最近 since 的连接按 bucket 时间桶计数，按时间升序返回。
+// since<=0 默认 1h；bucket<=0 默认 1m。用 epoch 算术对齐分桶（不依赖 time_bucket 等专用函数）。
+func (s *Store) TimeSeries(since, bucket time.Duration) ([]TSPoint, error) {
+	if since <= 0 {
+		since = time.Hour
+	}
+	if bucket <= 0 {
+		bucket = time.Minute
+	}
+	bucketSecs := max(int64(bucket/time.Second), 1)
+	from := time.Now().Add(-since)
+	// bucketSecs 是校验过的整数，内插安全；from 用参数占位。
+	q := fmt.Sprintf(`SELECT to_timestamp(floor(epoch(ts)/%d)*%d) AS b, count(*)
+		FROM connections WHERE ts >= ? GROUP BY 1 ORDER BY 1`, bucketSecs, bucketSecs)
+	rows, err := s.DB().Query(q, from)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []TSPoint{}
+	for rows.Next() {
+		var p TSPoint
+		if err := rows.Scan(&p.TS, &p.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
