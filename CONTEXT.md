@@ -5,8 +5,8 @@
 ## Language
 
 **明文 HTTP 连接**：
-经由 mihomo 出站、目的端口属于 HTTP 端口集（默认 `80`）的一条 TCP 连接。观测的最小单位是「连接」，不是单个 HTTP 请求——TUN 模式下 mihomo 工作在 L4，`/connections` 拿不到 method / path / header；浏览器 keep-alive 复用的一条连接里的多个请求，只算一条。
-_Avoid_: HTTP 请求、HTTP flow
+经由 mihomo 出站、目的端口属于 HTTP 端口集（默认 `80`）的一条 TCP 连接。观测的最小单位是「连接」，既不是单个 HTTP 请求、也不是单个数据包——mihomo 的 `[TCP]` 日志由 `logMetadata` 在**连接建立（拨号成功）那一刻只打一行**，之后收发的数据包不再产生日志（已核对 `tunnel.go`：`logMetadata` 先于 `handleSocket` 数据转发、每连接一次）。由此两个方向都要留意：keep-alive 复用的一条连接里的多个请求只算一条（低估请求数）；连接池对同一 host 开的多条连接算多条（`audit` 按 `(出境节点,目的host)` 去重收敛，`logs` 则原样逐条）。TUN 模式下 mihomo 工作在 L4，`/connections` 拿不到 method / path / header。
+_Avoid_: HTTP 请求、HTTP flow、数据包
 
 **出境节点**：
 一条连接实际经过的、`chains` 里最后一个真实代理节点。`DIRECT` / `REJECT` 不算出境节点（明文没有暴露给第三方中转，不构成泄露）。
