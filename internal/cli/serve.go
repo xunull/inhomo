@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -13,8 +14,10 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/spf13/cobra"
 	"github.com/xunull/inhomo/internal/store"
+	"github.com/xunull/inhomo/web"
 )
 
 func newServeCmd() *cobra.Command {
@@ -67,13 +70,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	registerRoutes(app, st)
+	if err := registerStatic(app); err != nil {
+		return err
+	}
 	// Ctrl-C（ctx 取消）→ 关闭 Fiber，app.Listen 随即返回。
 	go func() {
 		<-ctx.Done()
 		_ = app.ShutdownWithContext(context.Background())
 	}()
 
-	fmt.Fprintf(os.Stderr, "[inhomo] Web 分析接口：http://%s/api/summary （Ctrl-C 停）\n", addr)
+	fmt.Fprintf(os.Stderr, "[inhomo] Web 仪表盘：http://%s/ （Ctrl-C 停）\n", addr)
 	listenErr := app.Listen(addr)
 
 	stop() // 确保记录 goroutine 收尾（正常关闭时 ctx 已取消，此处幂等）
@@ -97,6 +103,21 @@ func parseDur(s string) (time.Duration, error) {
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(s)
+}
+
+// registerStatic 用内嵌的前端 dist 托管仪表盘（SPA：未匹配路由回退 index.html）。
+// 必须在 registerRoutes 之后注册，让 /api/* 优先匹配。
+func registerStatic(app *fiber.App) error {
+	dist, err := web.Dist()
+	if err != nil {
+		return err
+	}
+	app.Use("/", filesystem.New(filesystem.Config{
+		Root:         http.FS(dist),
+		Index:        "index.html",
+		NotFoundFile: "index.html",
+	}))
+	return nil
 }
 
 // registerRoutes 注册 Web 分析接口。handler 薄：调 store 查询 + 编码 JSON。
@@ -141,5 +162,10 @@ func registerRoutes(app *fiber.App, st *store.Store) {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.JSON(pts)
+	})
+
+	// 未知 /api/* 返回 404 JSON（而非落到静态回退的 index.html，避免 client 把 HTML 当 JSON）。
+	app.Use("/api", func(c *fiber.Ctx) error {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "未知接口 " + c.Path()})
 	})
 }

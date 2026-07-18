@@ -1,0 +1,8 @@
+/* 最小重置：让 antd Layout 占满全屏（去掉 Vite 默认的窄居中样式）。 */
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
