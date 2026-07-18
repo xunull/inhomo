@@ -1,20 +1,13 @@
-import { useEffect, useState } from 'react'
-import { Layout, Typography, Spin, Alert } from 'antd'
-import { getSummary, type Summary } from './api'
+import { useState } from 'react'
+import { Layout, Typography } from 'antd'
+import KpiBar from './components/KpiBar'
 
 const { Header, Content } = Layout
-const { Title, Text } = Typography
+const { Title } = Typography
 
-// T14 骨架：验证 antd 渲染 + API client 连通后端。真实面板/图在 T15–T18 加。
 export default function App() {
-  const [summary, setSummary] = useState<Summary | null>(null)
-  const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    getSummary()
-      .then(setSummary)
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
-  }, [])
+  // refreshKey 递增即触发全盘重取；T18 会由自动刷新驱动它，此前恒为 0。
+  const [refreshKey] = useState(0)
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -24,14 +17,7 @@ export default function App() {
         </Title>
       </Header>
       <Content style={{ padding: 24 }}>
-        <Title level={5}>仪表盘（骨架）</Title>
-        {err && <Alert type="error" showIcon message={`后端未连通：${err}`} />}
-        {!err && !summary && <Spin />}
-        {summary && (
-          <Text>
-            后端连通 ✔ 当前已记录 <b>{summary.total}</b> 条连接
-          </Text>
-        )}
+        <KpiBar refreshKey={refreshKey} />
       </Content>
     </Layout>
   )
