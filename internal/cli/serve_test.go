@@ -1,6 +1,35 @@
 package cli
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestParseSince(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"", 0, false},
+		{"24h", 24 * time.Hour, false},
+		{"7d", 7 * 24 * time.Hour, false},
+		{"90m", 90 * time.Minute, false},
+		{"bad", 0, true},
+		{"xd", 0, true},
+		{"-5d", 0, true}, // 负天数应报错，而非静默全量
+	}
+	for _, c := range cases {
+		got, err := parseSince(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("parseSince(%q) err=%v，wantErr=%v", c.in, err, c.wantErr)
+			continue
+		}
+		if !c.wantErr && got != c.want {
+			t.Errorf("parseSince(%q)=%v，期望 %v", c.in, got, c.want)
+		}
+	}
+}
 
 func TestIsLoopbackAddr(t *testing.T) {
 	cases := []struct {

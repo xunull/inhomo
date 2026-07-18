@@ -2,11 +2,15 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/spf13/cobra"
@@ -80,6 +84,21 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	return recordErr
 }
 
+// parseSince 解析相对时长：空 → 0（全量）；支持 "7d"（天）与 Go 时长（"24h"/"90m" 等）。
+func parseSince(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, nil
+	}
+	if strings.HasSuffix(s, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+		if err != nil || days < 0 {
+			return 0, fmt.Errorf("无效的 since %q", s)
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
 // registerRoutes 注册 Web 分析接口。handler 薄：调 store 查询 + 编码 JSON。
 func registerRoutes(app *fiber.App, st *store.Store) {
 	app.Get("/api/summary", func(c *fiber.Ctx) error {
@@ -88,5 +107,22 @@ func registerRoutes(app *fiber.App, st *store.Store) {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.JSON(sm)
+	})
+
+	// /api/aggregate?by=host&since=24h&limit=20 —— 按维度 top-N。
+	app.Get("/api/aggregate", func(c *fiber.Ctx) error {
+		since, err := parseSince(c.Query("since"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		rows, err := st.Aggregate(c.Query("by"), since, c.QueryInt("limit", 0)) // 0 → Aggregate 内兜底默认
+		if err != nil {
+			code := fiber.StatusInternalServerError
+			if errors.Is(err, store.ErrBadDimension) {
+				code = fiber.StatusBadRequest
+			}
+			return c.Status(code).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(rows)
 	})
 }
