@@ -23,7 +23,7 @@ func newAuditCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  runAudit,
 	}
-	cmd.Flags().String("level", "info", "订阅的日志级别；连接日志需要 info")
+	cmd.Flags().String(flagLevel, "info", "订阅的日志级别；连接日志需要 info")
 	cmd.Flags().String("http-ports", "80", "视为明文 HTTP 的目的端口集（逗号分隔）")
 	cmd.Flags().String("out", "", "JSONL 输出文件路径（留空则只打印到终端、不落盘）")
 	cmd.Flags().Duration("window", 5*time.Minute, "终端聚合时间窗：同一(节点,host)在窗内只冒一次")
@@ -31,9 +31,6 @@ func newAuditCmd() *cobra.Command {
 }
 
 func runAudit(cmd *cobra.Command, _ []string) error {
-	controller, _ := cmd.Flags().GetString(flagController)
-	secret, _ := cmd.Flags().GetString(flagSecret)
-	level, _ := cmd.Flags().GetString("level")
 	httpPortsFlag, _ := cmd.Flags().GetString("http-ports")
 	outPath, _ := cmd.Flags().GetString("out")
 	window, _ := cmd.Flags().GetDuration("window")
@@ -59,12 +56,9 @@ func runAudit(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client := logstream.New(controller, secret)
+	client, level := newClient(cmd)
 	client.OnConnect = func() {
 		fmt.Fprintln(os.Stderr, "[inhomo] 已连接 /logs，开始识别明文 HTTP 泄露…")
-	}
-	client.OnReconnect = func(wait time.Duration) {
-		fmt.Fprintf(os.Stderr, "[inhomo] 连接断开，%s 后重连…\n", wait)
 	}
 
 	// 已核对 mihomo log 包：事件先无条件入 logCh 再按全局 level 决定是否打到 stdout，
