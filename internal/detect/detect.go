@@ -10,6 +10,7 @@ import (
 // ConnLog 是从一行 mihomo 连接日志解析出的结构化中间结果（与 LeakEvent 配对：前者原始、后者判定后）。
 type ConnLog struct {
 	Network string // TCP / UDP
+	Process string // 发起连接的进程名（源地址 "(进程)" 后缀取得；无则空，如 mihomo 自身或未开 find-process）
 	Host    string // 目的 host（域名或 IP；IPv6 形如 [::1]）
 	Port    int    // 目的端口
 	Rule    string // 命中规则文本，如 "DomainKeyword(example)"；specialProxy / 无规则时可能为空或说明串
@@ -47,11 +48,12 @@ func Parse(line string) (ConnLog, bool) {
 	}
 	rest := strings.TrimSpace(line[rb+1:])
 
-	// 2. 跳过 "src --> "，取箭头之后的 tail（源地址本期不消费）
-	_, tail, found := strings.Cut(rest, " --> ")
+	// 2. 切 "src --> tail"；从源地址取进程名（App 画像用）
+	src, tail, found := strings.Cut(rest, " --> ")
 	if !found {
 		return ConnLog{}, false
 	}
+	process := extractProcess(src)
 
 	// 3. node = 最后一个 " using " 之后（节点名可能含空格/emoji，故取末段）
 	const usingSep = " using "
@@ -80,7 +82,22 @@ func Parse(line string) (ConnLog, bool) {
 		return ConnLog{}, false
 	}
 
-	return ConnLog{Network: network, Host: host, Port: port, Rule: rule, Node: node}, true
+	return ConnLog{Network: network, Process: process, Host: host, Port: port, Rule: rule, Node: node}, true
+}
+
+// extractProcess 从源地址 "<addr>(<进程名>)" 取进程名——第一个 '(' 到末尾 ')' 之间的全部内容，
+// 故进程名含空格或括号（如 "App (Beta)"）也完整。无 "(…)" 后缀返回空。
+// 源地址恒为 IP:port（不含 '('），第一个 '(' 必是进程名起点；'('/')' 为 ASCII，按字节切对 UTF-8 安全。
+func extractProcess(src string) string {
+	src = strings.TrimSpace(src)
+	if !strings.HasSuffix(src, ")") {
+		return ""
+	}
+	open := strings.IndexByte(src, '(')
+	if open < 0 {
+		return ""
+	}
+	return src[open+1 : len(src)-1]
 }
 
 // splitHostPort 按最后一个 ':' 切分，兼容域名、IPv4 与带方括号的 IPv6。

@@ -186,6 +186,26 @@ func TestParseClassify_realChainFormat(t *testing.T) {
 	}
 }
 
+// TestParse_process 覆盖从源地址 "(进程)" 提取进程名。
+func TestParse_process(t *testing.T) {
+	cases := []struct{ line, want string }{
+		{"[TCP] 198.18.0.1:55086(codex) --> chatgpt.com:443 match X using 🚀 节点选择[🇺🇸US|1.0X]", "codex"},
+		{"[TCP] 198.18.0.1:64263(Google Chrome Helper) --> a.com:443 match X using N", "Google Chrome Helper"},
+		{"[TCP] 198.18.0.1:3(App (Beta)) --> a.com:80 match X using N", "App (Beta)"}, // 名字含括号也完整
+		{"[TCP] mihomo --> 223.6.6.6:443 match GeoIP(cn) using 🎯 全球直连[DIRECT]", ""},
+		{"[TCP] 10.0.0.1:2 --> plain.us:80 match DomainKeyword(x) using N", ""},
+	}
+	for _, c := range cases {
+		cl, ok := Parse(c.line)
+		if !ok {
+			t.Fatalf("Parse 失败：%q", c.line)
+		}
+		if cl.Process != c.want {
+			t.Errorf("Process=%q，期望 %q（%q）", cl.Process, c.want, c.line)
+		}
+	}
+}
+
 // TestEffectiveNode 直接覆盖链路末端节点提取。
 func TestEffectiveNode(t *testing.T) {
 	cases := []struct{ in, want string }{
