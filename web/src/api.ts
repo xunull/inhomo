@@ -109,20 +109,29 @@ export function detailPath(f: Filter, since?: string): string {
 }
 
 // withDim：在切片上叠加一个维度取值（点条形/维度行钻取时用）。
+// 同维再叠加 = 替换（spread 覆盖旧值）；且被钉死维度的分布面板已隐藏，
+// 通常不会从条形对同一维度再钻，故「同维再点」= 替换/不可达。
 export function withDim(f: Filter, by: Dimension, rawKey: string): Filter {
   if (by === 'port') return { ...f, port: Number(rawKey) }
   return { ...f, [by]: rawKey } as Filter
 }
 
-// filterChips：把过滤切片展开成面包屑标签（维度取值 + route 谓词），供详情页展示。
-export function filterChips(f: Filter): { label: string; value: string }[] {
-  const chips: { label: string; value: string }[] = []
+// filterChips：把过滤切片展开成面包屑标签（含各约束的字段 key，供逐个删除）。
+export function filterChips(f: Filter): { key: keyof Filter; label: string; value: string }[] {
+  const chips: { key: keyof Filter; label: string; value: string }[] = []
   for (const d of FILTER_DIMS) {
     const v = f[d.key]
-    if (v != null && v !== '') chips.push({ label: d.label, value: String(v) })
+    if (v != null && v !== '') chips.push({ key: d.key, label: d.label, value: String(v) })
   }
-  if (f.route) chips.push({ label: '类型', value: f.route === 'direct' ? '直连' : '经代理' })
+  if (f.route) chips.push({ key: 'route', label: '类型', value: f.route === 'direct' ? '直连' : '经代理' })
   return chips
+}
+
+// withoutKey：从切片移除一个约束（面包屑 chip 删除用）。
+export function withoutKey(f: Filter, key: keyof Filter): Filter {
+  const next = { ...f }
+  delete next[key]
+  return next
 }
 
 // summary 只随过滤切片变、不含 since（KPI 概要口径：该切片的全时段总量，同主面板）。
