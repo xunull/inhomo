@@ -1,11 +1,11 @@
-import { useState } from 'react'
-import { Layout, Typography, Row, Col } from 'antd'
+import { useEffect, useState } from 'react'
+import { Layout, Typography, Row, Col, Select, Switch, Button, Space, Flex } from 'antd'
 import KpiBar from './components/KpiBar'
 import AggPanel from './components/AggPanel'
 import TimeSeriesChart from './components/TimeSeriesChart'
 
 const { Header, Content } = Layout
-const { Title } = Typography
+const { Title, Text } = Typography
 
 // 5 个聚合维度面板。
 const PANELS = [
@@ -16,11 +16,43 @@ const PANELS = [
   { by: 'port', title: '目标端口', color: '#eb2f96' },
 ]
 
+// 全局时间窗选项。
+const WINDOWS = [
+  { value: '1h', label: '近 1 小时' },
+  { value: '24h', label: '近 24 小时' },
+  { value: '7d', label: '近 7 天' },
+]
+
+const REFRESH_MS = 10_000
+
+// bucketFor：时间曲线的桶粒度随窗口自动取合理值，避免点数过多/过少。
+function bucketFor(since: string): string {
+  switch (since) {
+    case '1h':
+      return '1m'
+    case '24h':
+      return '30m'
+    case '7d':
+      return '3h'
+    default:
+      return '5m'
+  }
+}
+
+// 顶层集中管理时间窗与刷新：since 驱动聚合/时间曲线；refreshKey 递增触发全盘重取
+// （含 summary——它不随时间窗变，只随刷新）。各子面板据此取数。
 export default function App() {
-  // refreshKey 递增即触发全盘重取；T18 会由自动刷新驱动它，此前恒为 0。
-  const [refreshKey] = useState(0)
-  // since 时间窗（'' = 全部）；T18 会由全局时间窗 Select 驱动，此前恒为全部。
-  const since = ''
+  const [since, setSince] = useState('1h')
+  const [auto, setAuto] = useState(true)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  useEffect(() => {
+    if (!auto) return
+    const id = setInterval(() => setRefreshKey((k) => k + 1), REFRESH_MS)
+    return () => clearInterval(id)
+  }, [auto])
+
+  const bucket = bucketFor(since)
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -30,10 +62,21 @@ export default function App() {
         </Title>
       </Header>
       <Content style={{ padding: 24 }}>
+        <Flex justify="space-between" align="center" wrap gap={12} style={{ marginBottom: 16 }}>
+          <Space>
+            <Text type="secondary">时间窗</Text>
+            <Select value={since} onChange={setSince} options={WINDOWS} style={{ width: 130 }} />
+          </Space>
+          <Space>
+            <Switch checked={auto} onChange={setAuto} checkedChildren="自动" unCheckedChildren="手动" />
+            <Text type="secondary">每 {REFRESH_MS / 1000}s 刷新</Text>
+            <Button onClick={() => setRefreshKey((k) => k + 1)}>立即刷新</Button>
+          </Space>
+        </Flex>
+
         <KpiBar refreshKey={refreshKey} />
         <div style={{ marginTop: 16 }}>
-          {/* 时间曲线默认近 1h / 桶 5m；T18 会由全局时间窗驱动 since 与自动推导的 bucket。 */}
-          <TimeSeriesChart since="1h" bucket="5m" refreshKey={refreshKey} />
+          <TimeSeriesChart since={since} bucket={bucket} refreshKey={refreshKey} />
         </div>
         <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
           {PANELS.map((p) => (
