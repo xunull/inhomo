@@ -1,6 +1,6 @@
 import { Row, Col, Card, Statistic, Typography } from 'antd'
 import { useNavigate } from 'react-router'
-import { getSummary, detailPath, type Filter } from '../api'
+import { getSummary, detailPath, type Dimension, type Filter } from '../api'
 import { useApi } from '../useApi'
 import { fmtDateTime } from '../format'
 import AsyncBody from './AsyncBody'
@@ -24,11 +24,12 @@ export default function KpiBar({
   return (
     <AsyncBody state={state} skeletonRows={2}>
       {(data) => {
-        const cards: { title: string; value: number; delta?: Filter }[] = [
+        // delta = 过滤型（点→叠加约束进详情页）；dimTo = 维度型（点→该维度总览页）。
+        const cards: { title: string; value: number; delta?: Filter; dimTo?: Dimension }[] = [
           { title: '总连接', value: data.total, delta: {} },
-          { title: '去重域名', value: data.hosts },
-          { title: 'App', value: data.processes },
-          { title: '出境节点', value: data.nodes },
+          { title: '去重域名', value: data.hosts, dimTo: 'host' },
+          { title: 'App', value: data.processes, dimTo: 'process' },
+          { title: '出境节点', value: data.nodes, dimTo: 'node' },
           { title: '直连', value: data.direct, delta: { route: 'direct' } },
           { title: '经代理', value: data.proxied, delta: { route: 'proxied' } },
           { title: 'HTTP · 80', value: data.http, delta: { port: 80 } },
@@ -37,18 +38,18 @@ export default function KpiBar({
         return (
           <Row gutter={[16, 16]}>
             {cards.map((c) => {
-              const clickable = c.delta !== undefined
+              const onClick = c.dimTo
+                ? () => navigate(`/d/${c.dimTo}?since=${encodeURIComponent(since)}`)
+                : c.delta
+                  ? () => navigate(detailPath({ ...filter, ...c.delta }, since))
+                  : undefined
               return (
                 <Col key={c.title} xs={12} sm={8} md={6} xl={3}>
                   <Card
                     size="small"
-                    hoverable={clickable}
-                    style={clickable ? { cursor: 'pointer' } : undefined}
-                    onClick={
-                      clickable
-                        ? () => navigate(detailPath({ ...filter, ...c.delta }, since))
-                        : undefined
-                    }
+                    hoverable={onClick !== undefined}
+                    style={onClick ? { cursor: 'pointer' } : undefined}
+                    onClick={onClick}
                   >
                     <Statistic title={c.title} value={c.value} />
                   </Card>

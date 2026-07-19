@@ -8,7 +8,7 @@ import {
   CartesianGrid,
   ResponsiveContainer,
 } from 'recharts'
-import { useNavigate } from 'react-router'
+import { useNavigate, Link } from 'react-router'
 import { getAggregate, detailPath, withDim, type Dimension, type Filter } from '../api'
 import { useApi } from '../useApi'
 import AsyncBody from './AsyncBody'
@@ -45,7 +45,16 @@ export default function AggPanel({
   )
 
   return (
-    <Card title={title} size="small" styles={{ body: { padding: 12 } }}>
+    <Card
+      // 面板标题 → 该维度总览页（全量排名）。
+      title={
+        <Link to={`/d/${by}?since=${encodeURIComponent(since)}`} style={{ color: 'inherit' }}>
+          {title}
+        </Link>
+      }
+      size="small"
+      styles={{ body: { padding: 12 } }}
+    >
       <AsyncBody state={state} skeletonRows={4} isEmpty={(d) => d.length === 0}>
         {(data) => {
           // 空 key（如未识别进程）显示占位；后端已按 count 降序返回。rawKey 保留原值供钻取。
