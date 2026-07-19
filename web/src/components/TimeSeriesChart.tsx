@@ -10,24 +10,13 @@ import {
 } from 'recharts'
 import { getTimeseries } from '../api'
 import { useApi } from '../useApi'
+import { fmtDateTime, fmtTimeShort } from '../format'
 import AsyncBody from './AsyncBody'
 
 interface Props {
   since: string // 时间窗
   bucket: string // 桶粒度
   refreshKey: number
-}
-
-// x 轴刻度：短窗只显示时:分，避免拥挤。
-function fmtAxis(ts: string): string {
-  const d = new Date(ts)
-  return Number.isNaN(d.getTime()) ? ts : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-}
-
-// tooltip 标题：桶的完整时刻。
-function fmtFull(ts: string): string {
-  const d = new Date(ts)
-  return Number.isNaN(d.getTime()) ? ts : d.toLocaleString()
 }
 
 // TimeSeriesChart：连接数随时间的面积图，数据 [{ts,count}] 已按时间升序。
@@ -52,9 +41,9 @@ export default function TimeSeriesChart({ since, bucket, refreshKey }: Props) {
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="ts" tickFormatter={fmtAxis} minTickGap={32} />
+              <XAxis dataKey="ts" tickFormatter={fmtTimeShort} minTickGap={32} />
               <YAxis allowDecimals={false} />
-              <Tooltip labelFormatter={(l) => fmtFull(l as string)} />
+              <Tooltip labelFormatter={(l) => fmtDateTime(l as string)} />
               <Area
                 type="monotone"
                 dataKey="count"

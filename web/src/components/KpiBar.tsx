@@ -1,16 +1,10 @@
 import { Row, Col, Card, Statistic, Typography } from 'antd'
 import { getSummary } from '../api'
 import { useApi } from '../useApi'
+import { fmtDateTime } from '../format'
 import AsyncBody from './AsyncBody'
 
 const { Text } = Typography
-
-// fmtTime 把后端 ISO 时间串格式化为本地可读；空/非法 → 占位符（空库时 earliest/latest 为 null）。
-function fmtTime(s: string | null): string {
-  if (!s) return '—'
-  const d = new Date(s)
-  return Number.isNaN(d.getTime()) ? s : d.toLocaleString()
-}
 
 // KpiBar：顶部 KPI 概要条，字段对应 /api/summary。summary 不随时间窗变，仅随 refreshKey 重取。
 export default function KpiBar({ refreshKey }: { refreshKey: number }) {
@@ -42,7 +36,7 @@ export default function KpiBar({ refreshKey }: { refreshKey: number }) {
               <Card size="small">
                 <Text type="secondary">时间跨度：</Text>
                 <Text>
-                  {fmtTime(data.earliest)} → {fmtTime(data.latest)}
+                  {fmtDateTime(data.earliest)} → {fmtDateTime(data.latest)}
                 </Text>
               </Card>
             </Col>
