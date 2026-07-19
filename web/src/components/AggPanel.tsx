@@ -8,13 +8,14 @@ import {
   CartesianGrid,
   ResponsiveContainer,
 } from 'recharts'
-import { getAggregate, type Dimension } from '../api'
+import { getAggregate, type Dimension, type Filter } from '../api'
 import { useApi } from '../useApi'
 import AsyncBody from './AsyncBody'
 
 interface AggPanelProps {
   by: Dimension // 聚合维度
   title: string
+  filter: Filter // 过滤切片（在此切片内做聚合）
   since: string // 时间窗（'' = 全部）；由顶层全局时间窗驱动
   refreshKey: number
   limit?: number
@@ -30,12 +31,16 @@ function truncate(v: string, n = 12): string {
 export default function AggPanel({
   by,
   title,
+  filter,
   since,
   refreshKey,
   limit = 10,
   color = '#1677ff',
 }: AggPanelProps) {
-  const state = useApi(() => getAggregate(by, since, limit), [by, since, limit, refreshKey])
+  const state = useApi(
+    () => getAggregate(by, filter, since, limit),
+    [by, filter, since, limit, refreshKey],
+  )
 
   return (
     <Card title={title} size="small" styles={{ body: { padding: 12 } }}>

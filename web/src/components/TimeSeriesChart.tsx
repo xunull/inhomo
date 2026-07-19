@@ -8,20 +8,24 @@ import {
   CartesianGrid,
   ResponsiveContainer,
 } from 'recharts'
-import { getTimeseries } from '../api'
+import { getTimeseries, type Filter } from '../api'
 import { useApi } from '../useApi'
 import { fmtDateTime, fmtTimeShort } from '../format'
 import AsyncBody from './AsyncBody'
 
 interface Props {
+  filter: Filter // 过滤切片
   since: string // 时间窗
   bucket: string // 桶粒度
   refreshKey: number
 }
 
 // TimeSeriesChart：连接数随时间的面积图，数据 [{ts,count}] 已按时间升序。
-export default function TimeSeriesChart({ since, bucket, refreshKey }: Props) {
-  const state = useApi(() => getTimeseries(since, bucket), [since, bucket, refreshKey])
+export default function TimeSeriesChart({ filter, since, bucket, refreshKey }: Props) {
+  const state = useApi(
+    () => getTimeseries(filter, since, bucket),
+    [filter, since, bucket, refreshKey],
+  )
 
   return (
     <Card title="连接数时间曲线" size="small">

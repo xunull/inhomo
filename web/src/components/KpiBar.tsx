@@ -1,14 +1,14 @@
 import { Row, Col, Card, Statistic, Typography } from 'antd'
-import { getSummary } from '../api'
+import { getSummary, type Filter } from '../api'
 import { useApi } from '../useApi'
 import { fmtDateTime } from '../format'
 import AsyncBody from './AsyncBody'
 
 const { Text } = Typography
 
-// KpiBar：顶部 KPI 概要条，字段对应 /api/summary。summary 不随时间窗变，仅随 refreshKey 重取。
-export default function KpiBar({ refreshKey }: { refreshKey: number }) {
-  const state = useApi(() => getSummary(), [refreshKey])
+// KpiBar：顶部 KPI 概要条，字段对应 /api/summary（该过滤切片的口径）。summary 不随时间窗变，仅随切片/refreshKey 重取。
+export default function KpiBar({ filter, refreshKey }: { filter: Filter; refreshKey: number }) {
+  const state = useApi(() => getSummary(filter), [filter, refreshKey])
 
   return (
     <AsyncBody state={state} skeletonRows={2}>
