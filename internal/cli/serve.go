@@ -225,6 +225,19 @@ func registerRoutes(app *fiber.App, st *store.Store) {
 		return c.JSON(pg)
 	})
 
+	// /api/flow?<过滤>&since=&limit= —— 两层 App→节点 拓扑（Sankey 数据，每层 top-N + 其它桶）。
+	app.Get("/api/flow", func(c *fiber.Ctx) error {
+		f, err := parseFilter(c)
+		if err != nil {
+			return badReq(c, err)
+		}
+		g, err := st.Flow(f, c.QueryInt("limit", 0))
+		if err != nil {
+			return svrErr(c, err)
+		}
+		return c.JSON(g)
+	})
+
 	// 未知 /api/* 返回 404 JSON（而非落到静态回退的 index.html，避免 client 把 HTML 当 JSON）。
 	app.Use("/api", func(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "未知接口 " + c.Path()})

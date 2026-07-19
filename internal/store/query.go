@@ -286,3 +286,147 @@ func (s *Store) Connections(f Filter, offset, limit int) (ConnPage, error) {
 	}
 	return ConnPage{Rows: out, Total: total}, nil
 }
+
+// FlowNode 是拓扑图（Sankey）的一个节点。Name 按层加维度前缀命名空间（如 "process:gh"、
+// "node:🇺🇸US"），避免 ECharts 以 name 为唯一键时「同名跨层塌陷/成环」；Dim+Key 携带真实
+// 钻取值（「其它」桶 Key 为 __other__、不可钻）。
+type FlowNode struct {
+	Name  string `json:"name"`
+	Dim   string `json:"dim"`
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// FlowLink 是一条边（源节点 → 目标节点 的连接数）。
+type FlowLink struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+	Value  int64  `json:"value"`
+}
+
+// FlowGraph 是 /api/flow 的返回：两层 App→节点 拓扑的节点与边。
+type FlowGraph struct {
+	Nodes []FlowNode `json:"nodes"`
+	Links []FlowLink `json:"links"`
+}
+
+// flowOther 是「其它」桶的 Key（前端据此判定不可钻取）。用一个现实中不会作为进程名/节点名
+// 出现的哨兵值——万一真有同名取值且进入 top-N，其边会与溢出桶合并、被标为「其它」（可接受的边界）。
+const flowOther = "__other__"
+
+// topKeys 取 totals 里连接数最高的 limit 个 key（count 降序、同分按 key 升序，确定性）。
+func topKeys(totals map[string]int64, limit int) map[string]bool {
+	keys := make([]string, 0, len(totals))
+	for k := range totals {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if totals[keys[i]] != totals[keys[j]] {
+			return totals[keys[i]] > totals[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	keep := make(map[string]bool, limit)
+	for i := 0; i < len(keys) && i < limit; i++ {
+		keep[keys[i]] = true
+	}
+	return keep
+}
+
+// Flow 返回过滤切片内 App(process) → 出境节点(node) 两层拓扑的边。
+// 每层按连接数取 top-limit、其余归「其它」桶（limit<=0 默认 10、上限 50）。
+// 在 Go 侧算 top-N + 重映射（此规模的 (process,node) 边只有几百，够用、好测）。
+func (s *Store) Flow(f Filter, limit int) (FlowGraph, error) {
+	if limit <= 0 {
+		limit = 10
+	} else if limit > 50 {
+		limit = 50
+	}
+	where, args := f.where()
+	q := "SELECT process, node, count(*) FROM connections " + where + " GROUP BY 1, 2"
+	rows, err := s.DB().Query(q, args...)
+	if err != nil {
+		return FlowGraph{}, err
+	}
+	defer rows.Close()
+
+	type pair struct{ app, node string }
+	edges := map[pair]int64{}
+	appTotal := map[string]int64{}
+	nodeTotal := map[string]int64{}
+	for rows.Next() {
+		var app, node string
+		var cnt int64
+		if err := rows.Scan(&app, &node, &cnt); err != nil {
+			return FlowGraph{}, err
+		}
+		edges[pair{app, node}] += cnt
+		appTotal[app] += cnt
+		nodeTotal[node] += cnt
+	}
+	if err := rows.Err(); err != nil {
+		return FlowGraph{}, err
+	}
+
+	appTop := topKeys(appTotal, limit)
+	nodeTop := topKeys(nodeTotal, limit)
+
+	// 重映射：非 top 的取值折进「其它」，累加同一对边。
+	merged := map[pair]int64{}
+	for p, c := range edges {
+		app, node := p.app, p.node
+		if !appTop[app] {
+			app = flowOther
+		}
+		if !nodeTop[node] {
+			node = flowOther
+		}
+		merged[pair{app, node}] += c
+	}
+
+	nodeIndex := map[string]FlowNode{}
+	addNode := func(dim, key string) string {
+		name := dim + ":" + key
+		if _, ok := nodeIndex[name]; !ok {
+			label := key
+			switch key {
+			case "":
+				label = "(未知)"
+			case flowOther:
+				label = "其它"
+			}
+			nodeIndex[name] = FlowNode{Name: name, Dim: dim, Key: key, Label: label}
+		}
+		return name
+	}
+
+	links := make([]FlowLink, 0, len(merged))
+	for p, c := range merged {
+		src := addNode("process", p.app)
+		dst := addNode("node", p.node)
+		links = append(links, FlowLink{Source: src, Target: dst, Value: c})
+	}
+	// 确定性排序（value 降序，再按 source/target），便于测试与稳定渲染。
+	sort.Slice(links, func(i, j int) bool {
+		if links[i].Value != links[j].Value {
+			return links[i].Value > links[j].Value
+		}
+		if links[i].Source != links[j].Source {
+			return links[i].Source < links[j].Source
+		}
+		return links[i].Target < links[j].Target
+	})
+
+	nodes := make([]FlowNode, 0, len(nodeIndex))
+	for _, n := range nodeIndex {
+		nodes = append(nodes, n)
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].Dim != nodes[j].Dim {
+			return nodes[i].Dim < nodes[j].Dim
+		}
+		return nodes[i].Name < nodes[j].Name
+	})
+
+	return FlowGraph{Nodes: nodes, Links: links}, nil
+}

@@ -297,3 +297,87 @@ func TestStore_connections(t *testing.T) {
 		t.Errorf("全集 total=%d，期望 7", pg.Total)
 	}
 }
+
+// TestStore_flow 覆盖两层 App→节点 拓扑：基本边、top-N + 其它累加、命名空间不塌陷、过滤。
+func TestStore_flow(t *testing.T) {
+	// 空库 → 空节点/边，且非 nil（JSON 为 [] 而非 null）。
+	if g, err := seed(t, nil).Flow(Filter{}, 10); err != nil || g.Nodes == nil || g.Links == nil ||
+		len(g.Nodes) != 0 || len(g.Links) != 0 {
+		t.Fatalf("空库应空节点/边（非 nil），得 %+v（err %v）", g, err)
+	}
+
+	now := time.Now()
+	evs := []Event{}
+	addN := func(app, node string, n int) {
+		for range n {
+			evs = append(evs, Event{TS: now, Process: app, Node: node, Network: "TCP", Host: "h", Port: 443, Region: "R"})
+		}
+	}
+	addN("gh", "US", 5)
+	addN("curl", "US", 3)
+	addN("codex", "HK", 2)
+	addN("wechat", "DIRECT", 4)
+	addN("US", "HK", 1) // 进程名恰好叫 "US"：测与 node "US" 不塌陷
+	s := seed(t, evs)
+
+	linkVal := func(g FlowGraph, src, dst string) int64 {
+		for _, l := range g.Links {
+			if l.Source == src && l.Target == dst {
+				return l.Value
+			}
+		}
+		return -1
+	}
+	hasNode := func(g FlowGraph, name string) *FlowNode {
+		for i := range g.Nodes {
+			if g.Nodes[i].Name == name {
+				return &g.Nodes[i]
+			}
+		}
+		return nil
+	}
+
+	// limit=10：5 个 App、3 个节点全 fit，无「其它」。
+	g, err := s.Flow(Filter{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := linkVal(g, "process:gh", "node:US"); v != 5 {
+		t.Errorf("gh→US=%d，期望 5", v)
+	}
+	if v := linkVal(g, "process:curl", "node:US"); v != 3 {
+		t.Errorf("curl→US=%d，期望 3", v)
+	}
+	if hasNode(g, "process:US") == nil || hasNode(g, "node:US") == nil {
+		t.Error("命名空间：process:US 与 node:US 应同时存在、不塌陷")
+	}
+	if hasNode(g, "process:__other__") != nil {
+		t.Error("limit=10 全 fit，不该有「其它」App 桶")
+	}
+
+	// limit=2：top-2 App=gh(5)/wechat(4)，top-2 节点=US(8)/DIRECT(4)；其余归其它。
+	g2, _ := s.Flow(Filter{}, 2)
+	if v := linkVal(g2, "process:gh", "node:US"); v != 5 {
+		t.Errorf("gh→US=%d，期望 5", v)
+	}
+	if v := linkVal(g2, "process:__other__", "node:US"); v != 3 { // curl 折进其它
+		t.Errorf("其它→US=%d，期望 3", v)
+	}
+	if v := linkVal(g2, "process:__other__", "node:__other__"); v != 3 { // codex(HK)2 + US-app(HK)1 累加
+		t.Errorf("其它→其它=%d，期望 3（2+1 累加）", v)
+	}
+	if n := hasNode(g2, "process:__other__"); n == nil || n.Label != "其它" || n.Key != flowOther {
+		t.Errorf("其它桶节点异常：%+v", n)
+	}
+
+	// 过滤 node=US：只剩指向 US 的边。
+	gf, _ := s.Flow(Filter{Node: "US"}, 10)
+	if len(gf.Links) == 0 {
+		t.Fatal("过滤 node=US 不该为空")
+	}
+	for _, l := range gf.Links {
+		if l.Target != "node:US" {
+			t.Errorf("过滤 node=US 后出现非 US 目标：%s", l.Target)
+		}
+	}
+}
