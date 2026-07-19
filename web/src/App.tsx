@@ -8,10 +8,16 @@ import TimeSeriesChart from './components/TimeSeriesChart'
 const { Header, Content } = Layout
 const { Title, Text } = Typography
 
-// 5 个聚合维度面板。
-const PANELS: { by: Dimension; title: string; color: string }[] = [
+type Panel = { by: Dimension; title: string; color: string }
+
+// 按基数分两组，让每行卡片高度相近、栅格填满（避免 5 个面板挤 3 列留空位、行内高矮参差）：
+// 高基数维度（长列表）两列宽幅，长 host/App 名更易读。
+const TALL_PANELS: Panel[] = [
   { by: 'host', title: '热门域名', color: '#1677ff' },
   { by: 'process', title: 'App 画像', color: '#52c41a' },
+]
+// 低基数维度（少数几项）三列并排，行内高度接近。
+const SHORT_PANELS: Panel[] = [
   { by: 'node', title: '出境节点', color: '#722ed1' },
   { by: 'region', title: '地区分布', color: '#fa8c16' },
   { by: 'port', title: '目标端口', color: '#eb2f96' },
@@ -66,15 +72,16 @@ export default function App() {
           <TimeSeriesChart since={since} bucket={bucket} refreshKey={refreshKey} />
         </div>
         <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-          {PANELS.map((p) => (
+          {TALL_PANELS.map((p) => (
+            <Col key={p.by} xs={24} xl={12}>
+              <AggPanel by={p.by} title={p.title} color={p.color} since={since} refreshKey={refreshKey} />
+            </Col>
+          ))}
+        </Row>
+        <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+          {SHORT_PANELS.map((p) => (
             <Col key={p.by} xs={24} md={12} xl={8}>
-              <AggPanel
-                by={p.by}
-                title={p.title}
-                color={p.color}
-                since={since}
-                refreshKey={refreshKey}
-              />
+              <AggPanel by={p.by} title={p.title} color={p.color} since={since} refreshKey={refreshKey} />
             </Col>
           ))}
         </Row>
