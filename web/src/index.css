@@ -1,6 +1,10 @@
 /* 最小重置：让 antd Layout 占满全屏（去掉 Vite 默认的窄居中样式）。 */
 body {
   margin: 0;
+  /* 文档基础字体设为无衬线系统栈（与 antd 一致），避免 html/body 回退到浏览器
+     默认的衬线字体（Times New Roman）——antd 组件外的任何裸文本都会受此影响。 */
+  font-family: -apple-system, system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'PingFang SC', 'Noto Sans', 'Microsoft YaHei', sans-serif;
 }
 
 #root {
