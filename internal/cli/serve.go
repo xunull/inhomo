@@ -102,7 +102,14 @@ func parseDur(s string) (time.Duration, error) {
 		}
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
-	return time.ParseDuration(s)
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("无效的时长 %q（不接受负值）", s)
+	}
+	return d, nil
 }
 
 // registerStatic 用内嵌的前端 dist 托管仪表盘（SPA：未匹配路由回退 index.html）。
@@ -120,48 +127,102 @@ func registerStatic(app *fiber.App) error {
 	return nil
 }
 
-// registerRoutes 注册 Web 分析接口。handler 薄：调 store 查询 + 编码 JSON。
-func registerRoutes(app *fiber.App, st *store.Store) {
-	app.Get("/api/summary", func(c *fiber.Ctx) error {
-		sm, err := st.Summary()
+// parseFilter 从 query 解析出一个「过滤切片」：钻取约束（host/process/node/region/port 精确、
+// route=direct|proxied 谓词）+ 时间窗 since。非法 port/route/since 返回错误（handler 转 400）。
+func parseFilter(c *fiber.Ctx) (store.Filter, error) {
+	f := store.Filter{
+		Host:    c.Query("host"),
+		Process: c.Query("process"),
+		Node:    c.Query("node"),
+		Region:  c.Query("region"),
+	}
+	if p := c.Query("port"); p != "" {
+		n, err := strconv.Atoi(p)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return store.Filter{}, fmt.Errorf("无效的 port %q", p)
+		}
+		f.Port = &n
+	}
+	switch r := c.Query("route"); r {
+	case "", "direct", "proxied":
+		f.Route = r
+	default:
+		return store.Filter{}, fmt.Errorf("无效的 route %q（可选 direct/proxied）", r)
+	}
+	since, err := parseDur(c.Query("since"))
+	if err != nil {
+		return store.Filter{}, err
+	}
+	f.Since = since
+	return f, nil
+}
+
+// registerRoutes 注册 Web 分析接口。handler 薄：解析过滤切片 + 调 store 查询 + 编码 JSON。
+func registerRoutes(app *fiber.App, st *store.Store) {
+	badReq := func(c *fiber.Ctx, err error) error {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	svrErr := func(c *fiber.Ctx, err error) error {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// /api/summary?<过滤> —— 过滤切片的总量与分布（无参 = 全集，主面板口径不变）。
+	app.Get("/api/summary", func(c *fiber.Ctx) error {
+		f, err := parseFilter(c)
+		if err != nil {
+			return badReq(c, err)
+		}
+		sm, err := st.Summary(f)
+		if err != nil {
+			return svrErr(c, err)
 		}
 		return c.JSON(sm)
 	})
 
-	// /api/aggregate?by=host&since=24h&limit=20 —— 按维度 top-N。
+	// /api/aggregate?by=host&<过滤>&limit=20 —— 过滤切片内按维度 top-N。
 	app.Get("/api/aggregate", func(c *fiber.Ctx) error {
-		since, err := parseDur(c.Query("since"))
+		f, err := parseFilter(c)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			return badReq(c, err)
 		}
-		rows, err := st.Aggregate(c.Query("by"), since, c.QueryInt("limit", 0)) // 0 → Aggregate 内兜底默认
+		rows, err := st.Aggregate(c.Query("by"), f, c.QueryInt("limit", 0)) // 0 → Aggregate 内兜底默认
 		if err != nil {
-			code := fiber.StatusInternalServerError
 			if errors.Is(err, store.ErrBadDimension) {
-				code = fiber.StatusBadRequest
+				return badReq(c, err)
 			}
-			return c.Status(code).JSON(fiber.Map{"error": err.Error()})
+			return svrErr(c, err)
 		}
 		return c.JSON(rows)
 	})
 
-	// /api/timeseries?since=1h&bucket=5m —— 按时间桶的连接数。
+	// /api/timeseries?<过滤>&bucket=5m —— 过滤切片内按时间桶的连接数。
 	app.Get("/api/timeseries", func(c *fiber.Ctx) error {
-		since, err := parseDur(c.Query("since"))
+		f, err := parseFilter(c)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			return badReq(c, err)
 		}
 		bucket, err := parseDur(c.Query("bucket"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			return badReq(c, err)
 		}
-		pts, err := st.TimeSeries(since, bucket)
+		pts, err := st.TimeSeries(f, bucket)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return svrErr(c, err)
 		}
 		return c.JSON(pts)
+	})
+
+	// /api/connections?<过滤>&offset=0&limit=50 —— 过滤切片的原始连接明细（时间倒序，含总数）。
+	app.Get("/api/connections", func(c *fiber.Ctx) error {
+		f, err := parseFilter(c)
+		if err != nil {
+			return badReq(c, err)
+		}
+		pg, err := st.Connections(f, c.QueryInt("offset", 0), c.QueryInt("limit", 0))
+		if err != nil {
+			return svrErr(c, err)
+		}
+		return c.JSON(pg)
 	})
 
 	// 未知 /api/* 返回 404 JSON（而非落到静态回退的 index.html，避免 client 把 HTML 当 JSON）。
