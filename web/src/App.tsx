@@ -14,13 +14,14 @@ type Panel = { by: Dimension; title: string; color: string }
 // 高基数维度（长列表）两列宽幅，长 host/App 名更易读。
 const TALL_PANELS: Panel[] = [
   { by: 'host', title: '热门域名', color: '#1677ff' },
-  { by: 'process', title: 'App 画像', color: '#52c41a' },
+  { by: 'process', title: 'App 画像', color: '#389e0d' },
 ]
 // 低基数维度（少数几项）三列并排，行内高度接近。
+// 颜色取加深一级的色阶，让条形与白底对比度达 ≥3:1（原 #52c41a/#fa8c16 仅约 2.3:1）。
 const SHORT_PANELS: Panel[] = [
   { by: 'node', title: '出境节点', color: '#722ed1' },
-  { by: 'region', title: '地区分布', color: '#fa8c16' },
-  { by: 'port', title: '目标端口', color: '#eb2f96' },
+  { by: 'region', title: '地区分布', color: '#d46b08' },
+  { by: 'port', title: '目标端口', color: '#c41d7f' },
 ]
 
 // 全局时间窗选项：bucket 与窗口绑定，避免时间曲线点数过多/过少（单一数据源）。
@@ -62,7 +63,7 @@ export default function App() {
           </Space>
           <Space>
             <Switch checked={auto} onChange={setAuto} checkedChildren="自动" unCheckedChildren="手动" />
-            <Text type="secondary">每 {REFRESH_MS / 1000}s 刷新</Text>
+            <Text type="secondary">{auto ? `每 ${REFRESH_MS / 1000}s 刷新` : '自动刷新已暂停'}</Text>
             <Button onClick={() => setRefreshKey((k) => k + 1)}>立即刷新</Button>
           </Space>
         </Flex>
