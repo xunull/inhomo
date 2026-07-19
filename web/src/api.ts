@@ -18,6 +18,9 @@ export interface AggRow {
   count: number
 }
 
+// 后端白名单支持的聚合维度。
+export type Dimension = 'host' | 'process' | 'node' | 'region' | 'port'
+
 export interface TSPoint {
   ts: string
   count: number
@@ -40,7 +43,7 @@ async function getJSON<T>(url: string): Promise<T> {
 
 export const getSummary = () => getJSON<Summary>('/api/summary')
 
-export const getAggregate = (by: string, since = '', limit = 20) =>
+export const getAggregate = (by: Dimension, since = '', limit = 20) =>
   getJSON<AggRow[]>(
     `/api/aggregate?by=${encodeURIComponent(by)}&since=${encodeURIComponent(since)}&limit=${limit}`,
   )

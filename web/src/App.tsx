@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Layout, Typography, Row, Col, Select, Switch, Button, Space, Flex } from 'antd'
+import type { Dimension } from './api'
 import KpiBar from './components/KpiBar'
 import AggPanel from './components/AggPanel'
 import TimeSeriesChart from './components/TimeSeriesChart'
@@ -8,7 +9,7 @@ const { Header, Content } = Layout
 const { Title, Text } = Typography
 
 // 5 个聚合维度面板。
-const PANELS = [
+const PANELS: { by: Dimension; title: string; color: string }[] = [
   { by: 'host', title: '热门域名', color: '#1677ff' },
   { by: 'process', title: 'App 画像', color: '#52c41a' },
   { by: 'node', title: '出境节点', color: '#722ed1' },
@@ -16,28 +17,14 @@ const PANELS = [
   { by: 'port', title: '目标端口', color: '#eb2f96' },
 ]
 
-// 全局时间窗选项。
+// 全局时间窗选项：bucket 与窗口绑定，避免时间曲线点数过多/过少（单一数据源）。
 const WINDOWS = [
-  { value: '1h', label: '近 1 小时' },
-  { value: '24h', label: '近 24 小时' },
-  { value: '7d', label: '近 7 天' },
+  { value: '1h', label: '近 1 小时', bucket: '1m' },
+  { value: '24h', label: '近 24 小时', bucket: '30m' },
+  { value: '7d', label: '近 7 天', bucket: '3h' },
 ]
 
 const REFRESH_MS = 10_000
-
-// bucketFor：时间曲线的桶粒度随窗口自动取合理值，避免点数过多/过少。
-function bucketFor(since: string): string {
-  switch (since) {
-    case '1h':
-      return '1m'
-    case '24h':
-      return '30m'
-    case '7d':
-      return '3h'
-    default:
-      return '5m'
-  }
-}
 
 // 顶层集中管理时间窗与刷新：since 驱动聚合/时间曲线；refreshKey 递增触发全盘重取
 // （含 summary——它不随时间窗变，只随刷新）。各子面板据此取数。
@@ -52,7 +39,7 @@ export default function App() {
     return () => clearInterval(id)
   }, [auto])
 
-  const bucket = bucketFor(since)
+  const bucket = WINDOWS.find((w) => w.value === since)?.bucket ?? '5m'
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
