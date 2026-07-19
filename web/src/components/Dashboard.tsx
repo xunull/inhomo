@@ -4,6 +4,7 @@ import type { Dimension, Filter } from '../api'
 import KpiBar from './KpiBar'
 import AggPanel from './AggPanel'
 import TimeSeriesChart from './TimeSeriesChart'
+import ConnTable from './ConnTable'
 
 const { Text } = Typography
 
@@ -29,11 +30,23 @@ const WINDOWS = [
 
 const REFRESH_MS = 10_000
 
-// Dashboard：一个「过滤切片」的分析视图（主页传空切片；详情页传带约束的切片）。
-// 自身管理时间窗 / 自动刷新 / refreshKey，把 filter+since+refreshKey 透传给各子面板。
-export default function Dashboard({ filter }: { filter: Filter }) {
-  const [since, setSince] = useState('1h')
-  const [auto, setAuto] = useState(true)
+interface DashboardProps {
+  filter: Filter
+  initialSince?: string // 详情页从 URL 继承的时间窗
+  initialAuto?: boolean // 详情页默认关自动刷新
+  showConnections?: boolean // 详情页在面板下方展示原始明细表
+}
+
+// Dashboard：一个「过滤切片」的分析视图。主页传空切片；详情页传带约束的切片 + 明细表。
+// 自身管理时间窗 / 自动刷新 / refreshKey，把 filter+since+refreshKey 透传给各子面板与明细表。
+export default function Dashboard({
+  filter,
+  initialSince = '1h',
+  initialAuto = true,
+  showConnections = false,
+}: DashboardProps) {
+  const [since, setSince] = useState(initialSince)
+  const [auto, setAuto] = useState(initialAuto)
   const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
@@ -43,6 +56,9 @@ export default function Dashboard({ filter }: { filter: Filter }) {
   }, [auto])
 
   const bucket = WINDOWS.find((w) => w.value === since)?.bucket ?? '5m'
+  // 隐藏被精确过滤钉死的维度面板（只剩一个值的分布没意义）。
+  const visibleTall = TALL_PANELS.filter((p) => filter[p.by] == null)
+  const visibleShort = SHORT_PANELS.filter((p) => filter[p.by] == null)
 
   return (
     <>
@@ -58,24 +74,39 @@ export default function Dashboard({ filter }: { filter: Filter }) {
         </Space>
       </Flex>
 
-      <KpiBar filter={filter} refreshKey={refreshKey} />
+      <KpiBar filter={filter} since={since} refreshKey={refreshKey} />
       <div style={{ marginTop: 16 }}>
         <TimeSeriesChart filter={filter} since={since} bucket={bucket} refreshKey={refreshKey} />
       </div>
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        {TALL_PANELS.map((p) => (
-          <Col key={p.by} xs={24} xl={12}>
-            <AggPanel by={p.by} title={p.title} color={p.color} filter={filter} since={since} refreshKey={refreshKey} />
-          </Col>
-        ))}
-      </Row>
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        {SHORT_PANELS.map((p) => (
-          <Col key={p.by} xs={24} md={12} xl={8}>
-            <AggPanel by={p.by} title={p.title} color={p.color} filter={filter} since={since} refreshKey={refreshKey} />
-          </Col>
-        ))}
-      </Row>
+      {visibleTall.length > 0 && (
+        <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+          {visibleTall.map((p) => (
+            <Col key={p.by} xs={24} xl={12}>
+              <AggPanel by={p.by} title={p.title} color={p.color} filter={filter} since={since} refreshKey={refreshKey} />
+            </Col>
+          ))}
+        </Row>
+      )}
+      {visibleShort.length > 0 && (
+        <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+          {visibleShort.map((p) => (
+            <Col key={p.by} xs={24} md={12} xl={8}>
+              <AggPanel by={p.by} title={p.title} color={p.color} filter={filter} since={since} refreshKey={refreshKey} />
+            </Col>
+          ))}
+        </Row>
+      )}
+      {showConnections && (
+        <div style={{ marginTop: 16 }}>
+          {/* key 随切片/时间窗变化 → 重挂载明细表，分页复位到第一页（避免旧页码落到新切片空页）。 */}
+          <ConnTable
+            key={`${JSON.stringify(filter)}|${since}`}
+            filter={filter}
+            since={since}
+            refreshKey={refreshKey}
+          />
+        </div>
+      )}
     </>
   )
 }

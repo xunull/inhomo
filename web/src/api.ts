@@ -54,20 +54,75 @@ export interface Filter {
 // EMPTY_FILTER 是全集切片（主面板用）；导出为模块常量以保持引用稳定，避免下游 useApi 误重取。
 export const EMPTY_FILTER: Filter = {}
 
+// FILTER_DIMS 是可过滤的精确维度描述（单一事实源）：驱动 URL 编解码、面包屑、钻取。
+// route 谓词不在此表（布尔式、值需翻译成直连/经代理），各处单独处理。
+export const FILTER_DIMS: { key: Dimension; label: string; numeric?: boolean }[] = [
+  { key: 'host', label: '域名' },
+  { key: 'process', label: 'App' },
+  { key: 'node', label: '节点' },
+  { key: 'region', label: '地区' },
+  { key: 'port', label: '端口', numeric: true },
+]
+
+// filterParams 把过滤切片编码为 URLSearchParams（只带非空约束）。
+function filterParams(f: Filter): URLSearchParams {
+  const p = new URLSearchParams()
+  for (const d of FILTER_DIMS) {
+    const v = f[d.key]
+    if (v != null && v !== '') p.set(d.key, String(v))
+  }
+  if (f.route) p.set('route', f.route)
+  return p
+}
+
 // qs 把过滤切片 + 额外参数拼成查询串（只带非空项）。
 function qs(f: Filter, extra: Record<string, string | number | undefined> = {}): string {
-  const p = new URLSearchParams()
-  if (f.host) p.set('host', f.host)
-  if (f.process) p.set('process', f.process)
-  if (f.node) p.set('node', f.node)
-  if (f.region) p.set('region', f.region)
-  if (f.port != null) p.set('port', String(f.port))
-  if (f.route) p.set('route', f.route)
+  const p = filterParams(f)
   for (const [k, v] of Object.entries(extra)) {
     if (v !== undefined && v !== '') p.set(k, String(v))
   }
   const s = p.toString()
   return s ? `?${s}` : ''
+}
+
+// filterFromParams：URL 查询参数 → Filter（详情页从 URL 还原过滤切片）。
+export function filterFromParams(p: URLSearchParams): Filter {
+  const f: Filter = {}
+  for (const d of FILTER_DIMS) {
+    if (d.numeric) continue // port 单独处理（需转数字）
+    const v = p.get(d.key)
+    if (v) (f as Record<string, string>)[d.key] = v
+  }
+  const port = p.get('port')
+  if (port && !Number.isNaN(Number(port))) f.port = Number(port)
+  const route = p.get('route')
+  if (route === 'direct' || route === 'proxied') f.route = route
+  return f
+}
+
+// detailPath：构造过滤详情页 URL（过滤切片 + 可选时间窗）。
+export function detailPath(f: Filter, since?: string): string {
+  const p = filterParams(f)
+  if (since) p.set('since', since)
+  const s = p.toString()
+  return '/detail' + (s ? `?${s}` : '')
+}
+
+// withDim：在切片上叠加一个维度取值（点条形/维度行钻取时用）。
+export function withDim(f: Filter, by: Dimension, rawKey: string): Filter {
+  if (by === 'port') return { ...f, port: Number(rawKey) }
+  return { ...f, [by]: rawKey } as Filter
+}
+
+// filterChips：把过滤切片展开成面包屑标签（维度取值 + route 谓词），供详情页展示。
+export function filterChips(f: Filter): { label: string; value: string }[] {
+  const chips: { label: string; value: string }[] = []
+  for (const d of FILTER_DIMS) {
+    const v = f[d.key]
+    if (v != null && v !== '') chips.push({ label: d.label, value: String(v) })
+  }
+  if (f.route) chips.push({ label: '类型', value: f.route === 'direct' ? '直连' : '经代理' })
+  return chips
 }
 
 // summary 只随过滤切片变、不含 since（KPI 概要口径：该切片的全时段总量，同主面板）。
@@ -78,3 +133,24 @@ export const getAggregate = (by: Dimension, f: Filter = EMPTY_FILTER, since = ''
 
 export const getTimeseries = (f: Filter = EMPTY_FILTER, since = '1h', bucket = '5m') =>
   getJSON<TSPoint[]>('/api/timeseries' + qs(f, { since, bucket }))
+
+// ConnRow 是一条原始连接明细（对应后端 connections 全字段）。
+export interface ConnRow {
+  ts: string
+  process: string
+  network: string
+  host: string
+  port: number
+  rule: string
+  node: string
+  region: string
+}
+
+// ConnPage 是一页明细：当前页行 + 该切片总条数。
+export interface ConnPage {
+  rows: ConnRow[]
+  total: number
+}
+
+export const getConnections = (f: Filter = EMPTY_FILTER, since = '', offset = 0, limit = 50) =>
+  getJSON<ConnPage>('/api/connections' + qs(f, { since, offset, limit }))
