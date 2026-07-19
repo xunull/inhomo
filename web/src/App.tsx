@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Layout, Typography, Row, Col } from 'antd'
 import KpiBar from './components/KpiBar'
 import AggPanel from './components/AggPanel'
+import TimeSeriesChart from './components/TimeSeriesChart'
 
 const { Header, Content } = Layout
 const { Title } = Typography
@@ -30,6 +31,10 @@ export default function App() {
       </Header>
       <Content style={{ padding: 24 }}>
         <KpiBar refreshKey={refreshKey} />
+        <div style={{ marginTop: 16 }}>
+          {/* 时间曲线默认近 1h / 桶 5m；T18 会由全局时间窗驱动 since 与自动推导的 bucket。 */}
+          <TimeSeriesChart since="1h" bucket="5m" refreshKey={refreshKey} />
+        </div>
         <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
           {PANELS.map((p) => (
             <Col key={p.by} xs={24} md={12} xl={8}>
