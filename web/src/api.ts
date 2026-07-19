@@ -100,13 +100,19 @@ export function filterFromParams(p: URLSearchParams): Filter {
   return f
 }
 
-// detailPath：构造过滤详情页 URL（过滤切片 + 可选时间窗）。
-export function detailPath(f: Filter, since?: string): string {
+// pathWith：构造带过滤切片 + 可选时间窗的页面 URL（detail/topology 共用同一编码逻辑）。
+function pathWith(prefix: string, f: Filter, since?: string): string {
   const p = filterParams(f)
   if (since) p.set('since', since)
   const s = p.toString()
-  return '/detail' + (s ? `?${s}` : '')
+  return prefix + (s ? `?${s}` : '')
 }
+
+// detailPath：过滤详情页 URL。
+export const detailPath = (f: Filter, since?: string) => pathWith('/detail', f, since)
+
+// topologyPath：流量拓扑页 URL（供拓扑与详情/主页互相跳转）。
+export const topologyPath = (f: Filter, since?: string) => pathWith('/topology', f, since)
 
 // withDim：在切片上叠加一个维度取值（点条形/维度行钻取时用）。
 // 同维再叠加 = 替换（spread 覆盖旧值）；且被钉死维度的分布面板已隐藏，

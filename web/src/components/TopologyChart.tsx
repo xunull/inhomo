@@ -16,17 +16,36 @@ type EchartsParam = {
 }
 
 // TopologyChart：用裸 echarts 画 App→节点 的 Sankey。节点 name 已带层前缀命名空间（后端保证不塌陷）。
-export default function TopologyChart({ graph, height = 520 }: { graph: FlowGraph; height?: number }) {
+// onNodeClick：点非「其它」/非空节点时回调（dim+key 为真实钻取值），供上层跳转过滤详情。
+export default function TopologyChart({
+  graph,
+  height = 520,
+  onNodeClick,
+}: {
+  graph: FlowGraph
+  height?: number
+  onNodeClick?: (dim: string, key: string) => void
+}) {
   const elRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ReturnType<typeof echarts.init> | null>(null)
+  // 用 ref 持有回调，避免因回调引用变化而重建图表/重复注册点击。
+  const cbRef = useRef(onNodeClick)
+  cbRef.current = onNodeClick
 
-  // 初始化 / 销毁 + 跟随窗口 resize（只做一次）。
+  // 初始化 / 销毁 + 跟随窗口 resize + 节点点击（只做一次）。
   useEffect(() => {
     if (!elRef.current) return
     const chart = echarts.init(elRef.current)
     chartRef.current = chart
     const onResize = () => chart.resize()
     window.addEventListener('resize', onResize)
+    chart.on('click', (p) => {
+      const e = p as { dataType?: string; data?: { dim?: string; key?: string } }
+      // 只钻取实节点：排除「其它」桶（key=__other__）与空进程（key=''）。
+      if (e.dataType === 'node' && e.data?.key && e.data.key !== '__other__') {
+        cbRef.current?.(e.data.dim ?? '', e.data.key)
+      }
+    })
     return () => {
       window.removeEventListener('resize', onResize)
       chart.dispose()

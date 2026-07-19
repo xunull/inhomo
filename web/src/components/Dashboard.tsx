@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router'
 import { Row, Col, Select, Switch, Button, Space, Flex, Typography } from 'antd'
-import type { Dimension, Filter } from '../api'
+import { topologyPath, type Dimension, type Filter } from '../api'
 import KpiBar from './KpiBar'
 import AggPanel from './AggPanel'
 import TimeSeriesChart from './TimeSeriesChart'
@@ -66,6 +67,8 @@ export default function Dashboard({
         <Space>
           <Text type="secondary">时间窗</Text>
           <Select value={since} onChange={setSince} options={WINDOWS} style={{ width: 130 }} />
+          {/* 主页 → 全量拓扑；详情页（filter 非空）→ 当前切片的拓扑。 */}
+          <Link to={topologyPath(filter, since)}>流量拓扑 →</Link>
         </Space>
         <Space>
           <Switch checked={auto} onChange={setAuto} checkedChildren="自动" unCheckedChildren="手动" />
