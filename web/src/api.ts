@@ -163,3 +163,23 @@ export interface ConnPage {
 
 export const getConnections = (f: Filter = EMPTY_FILTER, since = '', offset = 0, limit = 50) =>
   getJSON<ConnPage>('/api/connections' + qs(f, { since, offset, limit }))
+
+// 拓扑图（Sankey）数据：节点 name 带层前缀命名空间，dim+key 携真实钻取值（其它桶 key=__other__）。
+export interface FlowNode {
+  name: string
+  dim: string
+  key: string
+  label: string
+}
+export interface FlowLink {
+  source: string
+  target: string
+  value: number
+}
+export interface FlowGraph {
+  nodes: FlowNode[]
+  links: FlowLink[]
+}
+
+export const getFlow = (f: Filter = EMPTY_FILTER, since = '1h', limit = 10) =>
+  getJSON<FlowGraph>('/api/flow' + qs(f, { since, limit }))
