@@ -11,4 +11,10 @@ export default defineConfig({
       '/api': 'http://127.0.0.1:8464',
     },
   },
+  build: {
+    // inhomo 是本机 localhost 的嵌入式面板（go:embed 打进二进制、走回环秒开），
+    // 无网络/CDN，拆分主包几乎没有实际收益，故调高阈值压掉这个纯提示性的分块大小警告。
+    // 首屏体积若真成问题，再按路由 React.lazy 拆分（拓扑页已如此），而非在此。
+    chunkSizeWarningLimit: 2000,
+  },
 })
