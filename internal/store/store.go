@@ -26,6 +26,21 @@ const schema = `CREATE TABLE IF NOT EXISTS connections (
 	region    VARCHAR
 )`
 
+// trafficSchema 是「流量记录」表（见 CONTEXT/ADR-0008）：来自轮询 /connections，与
+// connections（/logs 全量计数）不同数据集——每条「已完成连接」一行，带上/下行字节与时长。
+const trafficSchema = `CREATE TABLE IF NOT EXISTS traffic (
+	start_ts    TIMESTAMP,
+	process     VARCHAR,
+	network     VARCHAR,
+	host        VARCHAR,
+	port        INTEGER,
+	node        VARCHAR,
+	region      VARCHAR,
+	up_bytes    BIGINT,
+	down_bytes  BIGINT,
+	duration_ms BIGINT
+)`
+
 // Event 是一条连接事件（记录单位，对应 CONTEXT 的「连接事件」）。
 type Event struct {
 	TS      time.Time
@@ -56,10 +71,12 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("打开 DuckDB %s：%w", path, err)
 	}
 	db := sql.OpenDB(connector)
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		connector.Close()
-		return nil, fmt.Errorf("建表：%w", err)
+	for _, ddl := range []string{schema, trafficSchema} {
+		if _, err := db.Exec(ddl); err != nil {
+			db.Close()
+			connector.Close()
+			return nil, fmt.Errorf("建表：%w", err)
+		}
 	}
 	conn, err := connector.Connect(context.Background())
 	if err != nil {
@@ -85,6 +102,36 @@ func (s *Store) Add(e Event) error {
 		return errors.New("store 已关闭")
 	}
 	return s.appender.AppendRow(e.TS, e.Process, e.Network, e.Host, int32(e.Port), e.Rule, e.Node, e.Region)
+}
+
+// TrafficRecord 是一条「流量记录」（已完成连接的字节账）。
+type TrafficRecord struct {
+	Start      time.Time
+	Process    string
+	Network    string
+	Host       string
+	Port       int
+	Node       string
+	Region     string
+	UpBytes    int64
+	DownBytes  int64
+	DurationMs int64
+}
+
+// AddTraffic 写入一条流量记录。流量记录量小（每条已完成连接一行、且仅采样到的），
+// 用普通 INSERT（不走 connections 的 appender）；与 Add/Flush 共用一把锁串行化写入。
+func (s *Store) AddTraffic(r TrafficRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("store 已关闭")
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO traffic VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.Start, r.Process, r.Network, r.Host, int32(r.Port), r.Node, r.Region,
+		r.UpBytes, r.DownBytes, r.DurationMs,
+	)
+	return err
 }
 
 // Flush 把 appender 缓冲落地（供定期调用，让数据可查、更耐久）。关闭后为无操作。

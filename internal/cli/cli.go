@@ -19,6 +19,7 @@ const (
 	flagLevel      = "level"
 	flagDB         = "db"
 	flagAddr       = "addr"
+	flagTrafficInt = "traffic-interval"
 )
 
 func newRootCmd() *cobra.Command {

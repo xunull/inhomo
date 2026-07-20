@@ -23,8 +23,59 @@ type LogMessage struct {
 	Payload string `json:"payload"`
 }
 
+// ConnSnapshot 是 GET /connections 的返回（只取本项目需要的字段）：当前活跃连接的快照。
+type ConnSnapshot struct {
+	Connections []Conn `json:"connections"`
+}
+
+// Conn 是一条活跃连接。upload/download 是该连接**累计**字节；chains[0] 是实际出境节点。
+type Conn struct {
+	ID       string    `json:"id"`
+	Upload   int64     `json:"upload"`
+	Download int64     `json:"download"`
+	Start    time.Time `json:"start"`
+	Chains   []string  `json:"chains"`
+	Metadata ConnMeta  `json:"metadata"`
+}
+
+// ConnMeta 是连接元数据（destinationPort 在 mihomo 里是字符串）。
+type ConnMeta struct {
+	Network         string `json:"network"`
+	Host            string `json:"host"`
+	Process         string `json:"process"`
+	DestinationPort string `json:"destinationPort"`
+}
+
 // ErrAuth 表示鉴权失败（secret 不正确）——不可重试的致命错误。
 var ErrAuth = errors.New("鉴权失败：external-controller secret 不正确")
+
+// FetchConnections 拉取一次 /connections 快照（普通 GET，复用同一 http 传输/鉴权）。
+func (c *Client) FetchConnections(ctx context.Context) (*ConnSnapshot, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/connections", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.Secret != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Secret)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, ErrAuth
+	default:
+		return nil, fmt.Errorf("/connections 返回意外状态 %s", resp.Status)
+	}
+	var snap ConnSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
 
 // Client 连接单个 mihomo external-controller。
 type Client struct {

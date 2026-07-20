@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ func newRecordCmd() *cobra.Command {
 func addRecordFlags(cmd *cobra.Command) {
 	cmd.Flags().String(flagLevel, "info", "订阅的日志级别；连接日志需要 info")
 	cmd.Flags().String(flagDB, "", "DuckDB 库文件路径（默认 ~/.inhomo/connections.duckdb）")
+	cmd.Flags().Duration(flagTrafficInt, 3*time.Second, "轮询 /connections 记录流量字节的间隔（0 关闭）")
 }
 
 // resolveDBPath 计算最终库路径：空 → 默认 ~/.inhomo/connections.duckdb；"~/" 前缀 → 展开到 home。
@@ -97,6 +99,17 @@ func recordInto(ctx context.Context, cmd *cobra.Command, st *store.Store, connec
 
 	client, level := newClient(cmd, connectedMsg)
 
+	// 并行轮询 /connections 记录流量字节（与 /logs 流同一进程、同一 client）。
+	// 用 WaitGroup 等它收尾：ctx 取消后 poller 要「落一次仍活跃的连接」，必须在上层 Close 前完成，
+	// 否则 Close 先置 closed → 那批终值被 AddTraffic 拒写而丢失。
+	interval, _ := cmd.Flags().GetDuration(flagTrafficInt)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pollTraffic(ctx, client, st, interval)
+	}()
+
 	const statsInterval = 10 * time.Second
 	var recorded, skipped int
 	var lastStats time.Time
@@ -125,6 +138,7 @@ func recordInto(ctx context.Context, cmd *cobra.Command, st *store.Store, connec
 			lastStats = now
 		}
 	})
+	wg.Wait() // 等流量轮询收尾（含退出时落活跃连接）再返回，避免与上层 Close 竞争丢数据
 	if err != nil {
 		return err
 	}
