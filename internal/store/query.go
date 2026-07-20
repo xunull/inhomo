@@ -58,11 +58,12 @@ func (f Filter) drillConds() ([]string, []any) {
 	return conds, args
 }
 
-// where 构造完整 WHERE（钻取约束 + 可选时间窗）；无任何约束时返回空串。
-func (f Filter) where() (string, []any) {
+// whereOn 构造完整 WHERE（钻取约束 + 可选时间窗）；时间列名由 tsCol 指定
+// （connections 用 ts、traffic 用 start_ts）。tsCol 是代码内常量、免注入。无约束时返回空串。
+func (f Filter) whereOn(tsCol string) (string, []any) {
 	conds, args := f.drillConds()
 	if f.Since > 0 {
-		conds = append(conds, "ts >= ?")
+		conds = append(conds, tsCol+" >= ?")
 		args = append(args, time.Now().Add(-f.Since))
 	}
 	if len(conds) == 0 {
@@ -70,6 +71,9 @@ func (f Filter) where() (string, []any) {
 	}
 	return "WHERE " + strings.Join(conds, " AND "), args
 }
+
+// where 是 connections 表的 WHERE（时间列 ts）——Summary/Aggregate/Connections/Flow 共用。
+func (f Filter) where() (string, []any) { return f.whereOn("ts") }
 
 // Summary 是 /api/summary 的返回：总量与几个关键分布。
 type Summary struct {
@@ -140,9 +144,9 @@ var aggDimensions = map[string]string{
 }
 
 // dimensionHint 从白名单 map 的 keys 排序生成可读列表（单一事实源，避免与错误提示漂移）。
-func dimensionHint() string {
-	keys := make([]string, 0, len(aggDimensions))
-	for k := range aggDimensions {
+func dimensionHint(dims map[string]string) string {
+	keys := make([]string, 0, len(dims))
+	for k := range dims {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -154,7 +158,7 @@ func dimensionHint() string {
 func (s *Store) Aggregate(by string, f Filter, limit int) ([]AggRow, error) {
 	col, ok := aggDimensions[by]
 	if !ok {
-		return nil, fmt.Errorf("%w %q（可选：%s）", ErrBadDimension, by, dimensionHint())
+		return nil, fmt.Errorf("%w %q（可选：%s）", ErrBadDimension, by, dimensionHint(aggDimensions))
 	}
 	if limit <= 0 {
 		limit = 50
@@ -429,4 +433,88 @@ func (s *Store) Flow(f Filter, limit int) (FlowGraph, error) {
 	})
 
 	return FlowGraph{Nodes: nodes, Links: links}, nil
+}
+
+// TrafficRow 是带宽聚合的一行：某维度取值的上/下行字节合计。
+type TrafficRow struct {
+	Key       string `json:"key"`
+	UpBytes   int64  `json:"up"`
+	DownBytes int64  `json:"down"`
+}
+
+// TrafficAgg 是 /api/traffic 的返回：过滤切片内按维度的字节 top-N + 该切片总上/下行。
+type TrafficAgg struct {
+	Rows      []TrafficRow `json:"rows"`
+	TotalUp   int64        `json:"totalUp"`
+	TotalDown int64        `json:"totalDown"`
+}
+
+// ErrBadMetric 表示 metric 不在 up/down/total 内。
+var ErrBadMetric = errors.New("不支持的度量")
+
+// trafficDimensions 是 traffic 表的 by 白名单（防注入）：与 aggDimensions「维度一致」，仅去掉 rule——
+// traffic 表无 rule 列，若放进白名单，by=rule 会落到不存在的列而 500；挡在白名单外则返回 400 更诚实。
+var trafficDimensions = map[string]string{
+	"host":    "host",
+	"process": "process",
+	"node":    "node",
+	"region":  "region",
+	"port":    "port",
+}
+
+// trafficMetricOrder 是 metric 白名单：度量 → ORDER BY 表达式（驱动 top-N 排序）。
+// 上/下行两列始终一并返回，仅排序键随 metric 变，故前端切换 metric 不必重取两份字节。
+var trafficMetricOrder = map[string]string{
+	"up":    "sum(up_bytes)",
+	"down":  "sum(down_bytes)",
+	"total": "sum(up_bytes) + sum(down_bytes)",
+}
+
+// Traffic 在流量记录之上、按 by 维度聚合上/下行字节取 top-N（按 metric 排序），并返回该切片总上/下行。
+// by 须在 trafficDimensions 白名单内（否则 ErrBadDimension）；metric 空默认 total、非法 ErrBadMetric；
+// limit<=0 默认 20、上限 200。空结果 rows 为空切片（非 nil）、总量 0，不报错。
+func (s *Store) Traffic(by, metric string, f Filter, limit int) (TrafficAgg, error) {
+	col, ok := trafficDimensions[by]
+	if !ok {
+		return TrafficAgg{}, fmt.Errorf("%w %q（可选：%s）", ErrBadDimension, by, dimensionHint(trafficDimensions))
+	}
+	if metric == "" {
+		metric = "total"
+	}
+	orderExpr, ok := trafficMetricOrder[metric]
+	if !ok {
+		return TrafficAgg{}, fmt.Errorf("%w %q（可选：up/down/total）", ErrBadMetric, metric)
+	}
+	if limit <= 0 {
+		limit = 20
+	} else if limit > 200 {
+		limit = 200
+	}
+	where, args := f.whereOn("start_ts")
+
+	// 切片总上/下行（空结果 sum 为 NULL，COALESCE 归 0）。
+	ag := TrafficAgg{Rows: []TrafficRow{}}
+	if err := s.DB().QueryRow(
+		`SELECT COALESCE(sum(up_bytes),0), COALESCE(sum(down_bytes),0) FROM traffic `+where, args...,
+	).Scan(&ag.TotalUp, &ag.TotalDown); err != nil {
+		return TrafficAgg{}, err
+	}
+
+	// col 来自白名单、orderExpr 来自白名单、limit 已校验整数，内插安全；过滤值用参数占位。
+	q := fmt.Sprintf(`SELECT CAST(%s AS VARCHAR), COALESCE(sum(up_bytes),0), COALESCE(sum(down_bytes),0)
+		FROM traffic %s GROUP BY 1 ORDER BY %s DESC, 1 LIMIT %d`, col, where, orderExpr, limit)
+	rows, err := s.DB().Query(q, args...)
+	if err != nil {
+		return TrafficAgg{}, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var r TrafficRow
+		if err := rows.Scan(&r.Key, &r.UpBytes, &r.DownBytes); err != nil {
+			return TrafficAgg{}, err
+		}
+		ag.Rows = append(ag.Rows, r)
+	}
+	return ag, rows.Err()
 }

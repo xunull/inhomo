@@ -26,6 +26,106 @@ func seed(t *testing.T, evs []Event) *Store {
 	return s
 }
 
+// seedTraffic 建临时库并写入流量记录（AddTraffic 走直接 INSERT，无需 Flush 即可查）。
+func seedTraffic(t *testing.T, recs []TrafficRecord) *Store {
+	t.Helper()
+	s, err := Open(filepath.Join(t.TempDir(), "tr.duckdb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	for _, r := range recs {
+		if err := s.AddTraffic(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s
+}
+
+// TestStore_traffic 覆盖带宽聚合：三种 metric 排序、top-N、切片总量、过滤、时间窗、
+// 维度白名单（含 rule 必须被挡——traffic 无此列）与 metric 白名单。
+func TestStore_traffic(t *testing.T) {
+	now := time.Now()
+	mk := func(host, node, region string, up, down int64, ago time.Duration) TrafficRecord {
+		return TrafficRecord{
+			Start: now.Add(-ago), Process: "p", Network: "tcp",
+			Host: host, Port: 443, Node: node, Region: region,
+			UpBytes: up, DownBytes: down, DurationMs: 1000,
+		}
+	}
+
+	// 空库：空 rows（非 nil，JSON 为 []）、总量 0、不报错。
+	if ag, err := seedTraffic(t, nil).Traffic("host", "total", Filter{}, 10); err != nil ||
+		ag.Rows == nil || len(ag.Rows) != 0 || ag.TotalUp != 0 || ag.TotalDown != 0 {
+		t.Fatalf("空库应空 rows/0 总量，得 %+v（err %v）", ag, err)
+	}
+
+	s := seedTraffic(t, []TrafficRecord{
+		mk("a.com", "🇺🇸US", "US", 100, 1000, 0),
+		mk("a.com", "🇺🇸US", "US", 50, 500, 0), // a.com 合计 up150 down1500
+		mk("b.com", "🇭🇰HK", "HK", 900, 200, 0), // b.com up900 down200
+		mk("c.com", "DIRECT", "unknown", 10, 10, 2*time.Hour), // 2h 前
+	})
+
+	// 切片总上/下行（全集）：up=100+50+900+10=1060，down=1000+500+200+10=1710。
+	ag, err := s.Traffic("host", "total", Filter{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag.TotalUp != 1060 || ag.TotalDown != 1710 {
+		t.Fatalf("总量错：up=%d down=%d（期望 1060/1710）", ag.TotalUp, ag.TotalDown)
+	}
+	// metric=total：按 up+down 排序 → a.com(1650) > b.com(1100) > c.com(20)。
+	if ag.Rows[0].Key != "a.com" || ag.Rows[0].UpBytes != 150 || ag.Rows[0].DownBytes != 1500 {
+		t.Fatalf("total 排序/取值错：%+v", ag.Rows)
+	}
+	// metric=up：按 up 排序 → b.com(900) 居首。
+	if up, _ := s.Traffic("host", "up", Filter{}, 10); up.Rows[0].Key != "b.com" || up.Rows[0].UpBytes != 900 {
+		t.Fatalf("up 排序错：%+v", up.Rows)
+	}
+	// metric=down：按 down 排序 → a.com(1500) 居首。
+	if dn, _ := s.Traffic("host", "down", Filter{}, 10); dn.Rows[0].Key != "a.com" || dn.Rows[0].DownBytes != 1500 {
+		t.Fatalf("down 排序错：%+v", dn.Rows)
+	}
+	// top-N：limit=1 → 仅 1 行。
+	if one, _ := s.Traffic("host", "total", Filter{}, 1); len(one.Rows) != 1 {
+		t.Fatalf("limit=1 应 1 行，得 %d", len(one.Rows))
+	}
+	// since=1h：rows 与总量都排除 2h 前的 c.com。
+	win, _ := s.Traffic("host", "up", Filter{Since: time.Hour}, 10)
+	for _, r := range win.Rows {
+		if r.Key == "c.com" {
+			t.Fatalf("since=1h 不应含 c.com：%+v", win.Rows)
+		}
+	}
+	if win.TotalUp != 1050 { // 1060 - 10
+		t.Errorf("since=1h 总上行=%d，期望 1050", win.TotalUp)
+	}
+	// 过滤 region=HK → 仅 b.com。
+	if hk, _ := s.Traffic("host", "total", Filter{Region: "HK"}, 10); len(hk.Rows) != 1 || hk.Rows[0].Key != "b.com" {
+		t.Fatalf("region=HK 过滤错：%+v", hk.Rows)
+	}
+	// by=node 维度可用（走白名单）。
+	if bn, _ := s.Traffic("node", "total", Filter{}, 10); len(bn.Rows) == 0 {
+		t.Fatal("by=node 不该空")
+	}
+	// 坏维度 → ErrBadDimension；rule 必须被挡（traffic 无此列，否则 500）。
+	if _, err := s.Traffic("rule", "total", Filter{}, 10); !errors.Is(err, ErrBadDimension) {
+		t.Fatalf("by=rule 应 ErrBadDimension，得 %v", err)
+	}
+	if _, err := s.Traffic("evil; DROP", "total", Filter{}, 10); !errors.Is(err, ErrBadDimension) {
+		t.Fatalf("坏维度应 ErrBadDimension，得 %v", err)
+	}
+	// 坏 metric → ErrBadMetric。
+	if _, err := s.Traffic("host", "sideways", Filter{}, 10); !errors.Is(err, ErrBadMetric) {
+		t.Fatalf("坏 metric 应 ErrBadMetric，得 %v", err)
+	}
+	// metric 空 → 默认 total（不报错）。
+	if _, err := s.Traffic("host", "", Filter{}, 10); err != nil {
+		t.Fatalf("空 metric 应默认 total，得 err %v", err)
+	}
+}
+
 func TestStore_summary(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "s.duckdb"))
 	if err != nil {

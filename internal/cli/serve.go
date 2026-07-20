@@ -238,6 +238,22 @@ func registerRoutes(app *fiber.App, st *store.Store) {
 		return c.JSON(g)
 	})
 
+	// /api/traffic?by=host&metric=total&<过滤>&since=&limit= —— 流量记录上按维度的字节 top-N + 切片总上/下行。
+	app.Get("/api/traffic", func(c *fiber.Ctx) error {
+		f, err := parseFilter(c)
+		if err != nil {
+			return badReq(c, err)
+		}
+		ag, err := st.Traffic(c.Query("by"), c.Query("metric"), f, c.QueryInt("limit", 0))
+		if err != nil {
+			if errors.Is(err, store.ErrBadDimension) || errors.Is(err, store.ErrBadMetric) {
+				return badReq(c, err)
+			}
+			return svrErr(c, err)
+		}
+		return c.JSON(ag)
+	})
+
 	// 未知 /api/* 返回 404 JSON（而非落到静态回退的 index.html，避免 client 把 HTML 当 JSON）。
 	app.Use("/api", func(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "未知接口 " + c.Path()})
