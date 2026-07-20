@@ -11,6 +11,7 @@ import {
 import { useNavigate, Link } from 'react-router'
 import { getAggregate, detailPath, withDim, type Dimension, type Filter } from '../api'
 import { useApi } from '../useApi'
+import { truncate } from '../format'
 import AsyncBody from './AsyncBody'
 
 interface AggPanelProps {
@@ -21,11 +22,6 @@ interface AggPanelProps {
   refreshKey: number
   limit?: number
   color?: string
-}
-
-// 截断过长的分类标签（emoji 节点名 / 长 URL），完整值仍由 Tooltip 展示，避免溢出。
-function truncate(v: string, n = 12): string {
-  return v.length > n ? v.slice(0, n - 1) + '…' : v
 }
 
 // AggPanel：某一维度的 top-N 条形图。传 by/标题/limit/since，内部 fetch /api/aggregate。

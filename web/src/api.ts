@@ -189,3 +189,43 @@ export interface FlowGraph {
 
 export const getFlow = (f: Filter = EMPTY_FILTER, since = '1h', limit = 10) =>
   getJSON<FlowGraph>('/api/flow' + qs(f, { since, limit }))
+
+// 带宽度量：上行 / 下行 / 合计（up+down）。驱动 /api/traffic 的 top-N 排序。
+export type Metric = 'up' | 'down' | 'total'
+
+// TrafficRow 是某维度取值的上/下行字节合计（对应后端）。
+export interface TrafficRow {
+  key: string
+  up: number
+  down: number
+}
+
+// TrafficAgg 是 /api/traffic 的返回：按维度的字节 top-N + 该切片总上/下行。
+export interface TrafficAgg {
+  rows: TrafficRow[]
+  totalUp: number
+  totalDown: number
+}
+
+export const getTraffic = (
+  by: Dimension,
+  metric: Metric,
+  f: Filter = EMPTY_FILTER,
+  since = '',
+  limit = 10,
+) => getJSON<TrafficAgg>('/api/traffic' + qs(f, { by, metric, since, limit }))
+
+// getTrafficTotals：只取某切片的总上/下行（供「流量」视图顶部展示，与维度/度量无关）。
+// 各维度返回的总量一致，故取任一维度 limit=1 即可——封装在此避免调用点出现费解的任意实参。
+export const getTrafficTotals = (f: Filter = EMPTY_FILTER, since = '') =>
+  getJSON<TrafficAgg>('/api/traffic' + qs(f, { by: 'host', metric: 'total', since, limit: 1 }))
+
+// trafficPath：流量视图 URL（供 Dashboard 工具栏跳转，带当前切片 + 时间窗；metric 到页内默认 total）。
+export const trafficPath = (f: Filter, since?: string) => pathWith('/traffic', f, since)
+
+// TIME_WINDOWS：流量 / 拓扑等页面共用的时间窗选项（Dashboard 另有含 bucket 的变体，故不共用那个）。
+export const TIME_WINDOWS: { value: string; label: string }[] = [
+  { value: '1h', label: '近 1 小时' },
+  { value: '24h', label: '近 24 小时' },
+  { value: '7d', label: '近 7 天' },
+]

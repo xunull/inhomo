@@ -1,19 +1,20 @@
 import { useMemo, useState } from 'react'
 import { useSearchParams, useNavigate, Link } from 'react-router'
 import { Button, Card, Select, Space, Tag, Typography } from 'antd'
-import { getFlow, detailPath, filterFromParams, filterChips, withDim, type Dimension } from '../api'
+import {
+  getFlow,
+  detailPath,
+  filterFromParams,
+  filterChips,
+  withDim,
+  TIME_WINDOWS,
+  type Dimension,
+} from '../api'
 import { useApi } from '../useApi'
 import AsyncBody from './AsyncBody'
 import TopologyChart from './TopologyChart'
 
 const { Text } = Typography
-
-// 本页的时间窗（T26 会并入 Dashboard 工具栏；此处先自带一个最小选择器）。
-const WINDOWS = [
-  { value: '1h', label: '近 1 小时' },
-  { value: '24h', label: '近 24 小时' },
-  { value: '7d', label: '近 7 天' },
-]
 
 // TopologyPage：/topology 路由。App→出境节点 的 ECharts Sankey，受 URL 过滤切片 + 时间窗驱动。
 export default function TopologyPage() {
@@ -45,7 +46,7 @@ export default function TopologyPage() {
           </Tag>
         ))}
         <Text type="secondary">时间窗</Text>
-        <Select value={since} onChange={setSince} options={WINDOWS} style={{ width: 120 }} />
+        <Select value={since} onChange={setSince} options={TIME_WINDOWS} style={{ width: 120 }} />
         <Button onClick={() => setRefreshKey((k) => k + 1)}>立即刷新</Button>
       </Space>
       <Card size="small" title="App → 出境节点 流量拓扑（点节点钻取详情）">

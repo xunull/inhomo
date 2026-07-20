@@ -5,6 +5,7 @@ import { EMPTY_FILTER } from './api'
 import Dashboard from './components/Dashboard'
 import DetailPage from './components/DetailPage'
 import DimensionOverview from './components/DimensionOverview'
+import TrafficPage from './components/TrafficPage'
 
 // 拓扑页懒加载：echarts 随它单独成 chunk，不进主仪表盘首屏包。
 const TopologyPage = lazy(() => import('./components/TopologyPage'))
@@ -30,6 +31,7 @@ export default function App() {
             <Route path="/" element={<Dashboard filter={EMPTY_FILTER} />} />
             <Route path="/detail" element={<DetailPage />} />
             <Route path="/d/:dim" element={<DimensionOverview />} />
+            <Route path="/traffic" element={<TrafficPage />} />
             <Route
               path="/topology"
               element={

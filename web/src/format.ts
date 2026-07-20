@@ -15,3 +15,24 @@ export function fmtTimeShort(s: string): string {
     ? s
     : d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
+
+// truncate：截断过长分类标签（emoji 节点名 / 长 URL），完整值仍由 Tooltip 展示，避免溢出。
+// 按「码点」而非 UTF-16 码元切：Array.from 把 emoji / 国旗（代理对）当单个字符，
+// 避免从中间切断产生乱码「�」。
+export function truncate(v: string, n = 12): string {
+  const chars = Array.from(v)
+  return chars.length > n ? chars.slice(0, n - 1).join('') + '…' : v
+}
+
+// fmtBytes：字节数友好显示（B/KB/MB/GB/TB，1024 进制）。用于流量视图的字节量。
+export function fmtBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
