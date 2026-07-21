@@ -64,8 +64,8 @@ export const FILTER_DIMS: { key: Dimension; label: string; numeric?: boolean }[]
   { key: 'port', label: '端口', numeric: true },
 ]
 
-// filterParams 把过滤切片编码为 URLSearchParams（只带非空约束）。
-function filterParams(f: Filter): URLSearchParams {
+// filterParams 把过滤切片编码为 URLSearchParams（只带非空约束）。导出供单测直接验证往返编码。
+export function filterParams(f: Filter): URLSearchParams {
   const p = new URLSearchParams()
   for (const d of FILTER_DIMS) {
     const v = f[d.key]
@@ -75,8 +75,8 @@ function filterParams(f: Filter): URLSearchParams {
   return p
 }
 
-// qs 把过滤切片 + 额外参数拼成查询串（只带非空项）。
-function qs(f: Filter, extra: Record<string, string | number | undefined> = {}): string {
+// qs 把过滤切片 + 额外参数拼成查询串（只带非空项）。导出供单测直接验证 extra 合并/丢空/前缀。
+export function qs(f: Filter, extra: Record<string, string | number | undefined> = {}): string {
   const p = filterParams(f)
   for (const [k, v] of Object.entries(extra)) {
     if (v !== undefined && v !== '') p.set(k, String(v))
