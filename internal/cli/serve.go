@@ -225,14 +225,18 @@ func registerRoutes(app *fiber.App, st *store.Store) {
 		return c.JSON(pg)
 	})
 
-	// /api/flow?<过滤>&since=&limit= —— 两层 App→节点 拓扑（Sankey 数据，每层 top-N + 其它桶）。
+	// /api/flow?metric=count&<过滤>&since=&limit= —— 两层 App→节点 拓扑（Sankey 数据，每层 top-N + 其它桶）。
+	// metric：连接数(count，默认、全量) 或 字节(up/down/total，抽样)——决定边权与取表。
 	app.Get("/api/flow", func(c *fiber.Ctx) error {
 		f, err := parseFilter(c)
 		if err != nil {
 			return badReq(c, err)
 		}
-		g, err := st.Flow(f, c.QueryInt("limit", 0))
+		g, err := st.Flow(f, c.Query("metric"), c.QueryInt("limit", 0))
 		if err != nil {
+			if errors.Is(err, store.ErrBadMetric) {
+				return badReq(c, err)
+			}
 			return svrErr(c, err)
 		}
 		return c.JSON(g)

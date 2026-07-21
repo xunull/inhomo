@@ -398,10 +398,11 @@ func TestStore_connections(t *testing.T) {
 	}
 }
 
-// TestStore_flow 覆盖两层 App→节点 拓扑：基本边、top-N + 其它累加、命名空间不塌陷、过滤。
+// TestStore_flow 覆盖两层 App→节点 拓扑（连接数度量 count，来自全量连接事件）：
+// 基本边、top-N + 其它累加、命名空间不塌陷、过滤。
 func TestStore_flow(t *testing.T) {
 	// 空库 → 空节点/边，且非 nil（JSON 为 [] 而非 null）。
-	if g, err := seed(t, nil).Flow(Filter{}, 10); err != nil || g.Nodes == nil || g.Links == nil ||
+	if g, err := seed(t, nil).Flow(Filter{}, "count", 10); err != nil || g.Nodes == nil || g.Links == nil ||
 		len(g.Nodes) != 0 || len(g.Links) != 0 {
 		t.Fatalf("空库应空节点/边（非 nil），得 %+v（err %v）", g, err)
 	}
@@ -438,7 +439,7 @@ func TestStore_flow(t *testing.T) {
 	}
 
 	// limit=10：5 个 App、3 个节点全 fit，无「其它」。
-	g, err := s.Flow(Filter{}, 10)
+	g, err := s.Flow(Filter{}, "count", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +457,7 @@ func TestStore_flow(t *testing.T) {
 	}
 
 	// limit=2：top-2 App=gh(5)/wechat(4)，top-2 节点=US(8)/DIRECT(4)；其余归其它。
-	g2, _ := s.Flow(Filter{}, 2)
+	g2, _ := s.Flow(Filter{}, "count", 2)
 	if v := linkVal(g2, "process:gh", "node:US"); v != 5 {
 		t.Errorf("gh→US=%d，期望 5", v)
 	}
@@ -471,7 +472,7 @@ func TestStore_flow(t *testing.T) {
 	}
 
 	// 过滤 node=US：只剩指向 US 的边。
-	gf, _ := s.Flow(Filter{Node: "US"}, 10)
+	gf, _ := s.Flow(Filter{Node: "US"}, "count", 10)
 	if len(gf.Links) == 0 {
 		t.Fatal("过滤 node=US 不该为空")
 	}
@@ -479,5 +480,103 @@ func TestStore_flow(t *testing.T) {
 		if l.Target != "node:US" {
 			t.Errorf("过滤 node=US 后出现非 US 目标：%s", l.Target)
 		}
+	}
+}
+
+// TestStore_flowMetric 覆盖拓扑按字节度量加权（来自抽样的流量记录）：
+// 边权=字节合计（而非记录数）、up/down/total 三档不同、top-N 按字节、空 metric 默认 count、非法 metric。
+func TestStore_flowMetric(t *testing.T) {
+	now := time.Now()
+	mk := func(app, node string, up, down int64) TrafficRecord {
+		return TrafficRecord{
+			Start: now, Process: app, Network: "tcp", Host: "h", Port: 443,
+			Node: node, Region: "R", UpBytes: up, DownBytes: down, DurationMs: 1000,
+		}
+	}
+	// gh：仅 1 条但高字节；curl：3 条但低字节 —— 用来证明边权按「字节」而非「记录数」。
+	s := seedTraffic(t, []TrafficRecord{
+		mk("gh", "US", 1000, 0),
+		mk("curl", "US", 1, 1),
+		mk("curl", "US", 1, 1),
+		mk("curl", "US", 1, 1),
+		mk("codex", "HK", 300, 200), // total 500
+	})
+
+	linkVal := func(g FlowGraph, src, dst string) int64 {
+		for _, l := range g.Links {
+			if l.Source == src && l.Target == dst {
+				return l.Value
+			}
+		}
+		return -1
+	}
+
+	// metric=total：边权=上+下字节合计。gh 仅 1 条却重于 curl 的 3 条 → 证明按字节、非记录数。
+	gt, err := s.Flow(Filter{}, "total", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := linkVal(gt, "process:gh", "node:US"); v != 1000 {
+		t.Errorf("total gh→US=%d，期望 1000（字节合计，非 1 条记录）", v)
+	}
+	if v := linkVal(gt, "process:curl", "node:US"); v != 6 {
+		t.Errorf("total curl→US=%d，期望 6（3 条×(1+1)）", v)
+	}
+	if v := linkVal(gt, "process:codex", "node:HK"); v != 500 {
+		t.Errorf("total codex→HK=%d，期望 500", v)
+	}
+
+	// metric=up / down：仅方向字节。gh 无下行 → down 边权 0（与 up=1000 分得开）。
+	gu, _ := s.Flow(Filter{}, "up", 10)
+	if v := linkVal(gu, "process:gh", "node:US"); v != 1000 {
+		t.Errorf("up gh→US=%d，期望 1000", v)
+	}
+	gd, _ := s.Flow(Filter{}, "down", 10)
+	if v := linkVal(gd, "process:gh", "node:US"); v != 0 {
+		t.Errorf("down gh→US=%d，期望 0（gh 无下行）", v)
+	}
+	if v := linkVal(gd, "process:curl", "node:US"); v != 3 {
+		t.Errorf("down curl→US=%d，期望 3", v)
+	}
+
+	// top-N 按字节：limit=1 → top-1 App=gh(1000)、top-1 节点=US(1006)；其余折进「其它」。
+	// codex→HK 两端都非 top → 折成 其它→其它=500。
+	g1, _ := s.Flow(Filter{}, "total", 1)
+	if v := linkVal(g1, "process:gh", "node:US"); v != 1000 {
+		t.Errorf("limit=1 total gh→US=%d，期望 1000", v)
+	}
+	if v := linkVal(g1, "process:__other__", "node:__other__"); v != 500 {
+		t.Errorf("limit=1 其它→其它=%d，期望 500（codex→HK 两端折叠）", v)
+	}
+
+	// 过滤切片作用在 traffic 表（复用 filter-on-traffic、whereOn("start_ts")）：
+	// Node=US → 只剩指向 US 的边，HK 消失。钉住字节路径的 表/时间列 接线正确。
+	gus, _ := s.Flow(Filter{Node: "US"}, "total", 10)
+	if len(gus.Links) == 0 {
+		t.Fatal("过滤 node=US（total）不该为空")
+	}
+	for _, l := range gus.Links {
+		if l.Target != "node:US" {
+			t.Errorf("过滤 node=US（total）后出现非 US 目标：%s", l.Target)
+		}
+	}
+	if v := linkVal(gus, "process:gh", "node:US"); v != 1000 {
+		t.Errorf("过滤后 total gh→US=%d，期望 1000", v)
+	}
+
+	// 空流量表 + 字节度量：空图但非 nil（JSON 为 []），不报错、不误落到 count 路径。
+	if ge, err := seedTraffic(t, nil).Flow(Filter{}, "total", 10); err != nil ||
+		ge.Nodes == nil || ge.Links == nil || len(ge.Links) != 0 {
+		t.Errorf("空流量表（total）应空图非 nil，得 nodes=%v links=%v err=%v", ge.Nodes, ge.Links, err)
+	}
+
+	// 空 metric 默认 count：此库无连接事件 → 空图（证明默认走 connections 而非 traffic）。
+	if gc, err := s.Flow(Filter{}, "", 10); err != nil || len(gc.Links) != 0 {
+		t.Errorf("空 metric 应默认 count；此库无连接事件应空图，得 links=%d err=%v", len(gc.Links), err)
+	}
+
+	// 非法 metric → ErrBadMetric（serve 层据此回 400）。
+	if _, err := s.Flow(Filter{}, "bogus", 10); !errors.Is(err, ErrBadMetric) {
+		t.Errorf("非法 metric 应 ErrBadMetric，得 %v", err)
 	}
 }

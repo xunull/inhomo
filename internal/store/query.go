@@ -337,17 +337,39 @@ func topKeys(totals map[string]int64, limit int) map[string]bool {
 	return keep
 }
 
-// Flow 返回过滤切片内 App(process) → 出境节点(node) 两层拓扑的边。
-// 每层按连接数取 top-limit、其余归「其它」桶（limit<=0 默认 10、上限 50）。
-// 在 Go 侧算 top-N + 重映射（此规模的 (process,node) 边只有几百，够用、好测）。
-func (s *Store) Flow(f Filter, limit int) (FlowGraph, error) {
+// flowMetricWeight 是 Flow 的 metric 白名单：度量 → (表, 时间列, 边权表达式)。
+// count 走全量「连接事件」(connections) 数连接数；up/down/total 走「流量记录」(traffic) 按字节求和——
+// 即拓扑图的字节口径与 /api/traffic 同源、同为**抽样**（短连接漏计，见 ADR-0008）。
+// 三者均为编译期常量，内插进 SQL 安全（防注入）。
+var flowMetricWeight = map[string]struct {
+	table, tsCol, weight string
+}{
+	"count": {"connections", "ts", "count(*)"},
+	"up":    {"traffic", "start_ts", "COALESCE(sum(up_bytes), 0)"},
+	"down":  {"traffic", "start_ts", "COALESCE(sum(down_bytes), 0)"},
+	"total": {"traffic", "start_ts", "COALESCE(sum(up_bytes) + sum(down_bytes), 0)"},
+}
+
+// Flow 返回过滤切片内 App(process) → 出境节点(node) 两层拓扑的边，边权由 metric 决定：
+// 连接数(count，默认、来自全量连接事件) 或 字节(up/down/total，来自抽样的流量记录)。
+// 每层按边权取 top-limit、其余归「其它」桶（limit<=0 默认 10、上限 50）。
+// metric 空默认 count；非法 metric → ErrBadMetric。top-N + 重映射在 Go 侧算
+//（此规模的 (process,node) 边只有几百，够用、好测）。
+func (s *Store) Flow(f Filter, metric string, limit int) (FlowGraph, error) {
+	if metric == "" {
+		metric = "count"
+	}
+	spec, ok := flowMetricWeight[metric]
+	if !ok {
+		return FlowGraph{}, fmt.Errorf("%w %q（可选：count/up/down/total）", ErrBadMetric, metric)
+	}
 	if limit <= 0 {
 		limit = 10
 	} else if limit > 50 {
 		limit = 50
 	}
-	where, args := f.where()
-	q := "SELECT process, node, count(*) FROM connections " + where + " GROUP BY 1, 2"
+	where, args := f.whereOn(spec.tsCol)
+	q := fmt.Sprintf("SELECT process, node, %s FROM %s %s GROUP BY 1, 2", spec.weight, spec.table, where)
 	rows, err := s.DB().Query(q, args...)
 	if err != nil {
 		return FlowGraph{}, err
