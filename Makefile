@@ -15,8 +15,9 @@ build: ## go build（CGO，内嵌 web/dist）
 install: frontend ## go install（CGO，先重建前端再装到 $GOBIN/$GOPATH/bin，覆盖 PATH 上的 inhomo）
 	CGO_ENABLED=1 go install .
 
-test: ## go test（CGO）
+test: ## go test（CGO）+ web 单测（vitest）
 	CGO_ENABLED=1 go test ./...
+	npm --prefix web run test
 
 clean:
 	rm -f inhomo

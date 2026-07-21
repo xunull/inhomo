@@ -22,5 +22,7 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // 测试文件从 vitest 导入、且不参与产物构建，排除出 app 编译单元，保持 `tsc -b` 干净。
+  "exclude": ["src/**/*.test.ts"]
 }
