@@ -31,9 +31,10 @@ func newAuditCmd() *cobra.Command {
 }
 
 func runAudit(cmd *cobra.Command, _ []string) error {
-	httpPortsFlag, _ := cmd.Flags().GetString("http-ports")
-	outPath, _ := cmd.Flags().GetString("out")
-	window, _ := cmd.Flags().GetDuration("window")
+	v := cfgOf(cmd)
+	httpPortsFlag := v.GetString("http-ports")
+	outPath := v.GetString("out")
+	window := v.GetDuration("window")
 
 	httpPorts := parseHTTPPorts(httpPortsFlag)
 

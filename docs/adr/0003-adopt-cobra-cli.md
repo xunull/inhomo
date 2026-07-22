@@ -5,3 +5,7 @@
 代价：**放弃零依赖**——引入 `spf13/cobra` 及其传递依赖（`spf13/pflag` 等）。这是自 ADR-0002「消费端零第三方依赖」以来的一次有意反转，**仅限 CLI 层**；核心的 `detect` / `logstream` / `sink` / `aggregate` 仍保持标准库、无外部依赖。
 
 CLI 由此变为 `inhomo <子命令> -flags`（原来的 `inhomo -flags` 不再可用，属早期项目可接受的破坏性变更）。
+
+## 后续修订
+
+**ADR-0009** 修订了本 ADR：`--controller`/`--secret` 不再只能命令行传，现在也可由 `~/.inhomo/config.yaml` 或 `INHOMO_*` 环境变量提供（显式 flag 仍最高优先）。持久 flag 跨子命令共享的定位不变。

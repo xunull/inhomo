@@ -29,6 +29,9 @@ func newRootCmd() *cobra.Command {
 		Long:          "inhomo 订阅 mihomo 的 /logs 流，审计经由代理出站的明文 HTTP 泄露。",
 		SilenceUsage:  true, // 运行期错误不再叠加 usage
 		SilenceErrors: true, // 错误由 Execute 统一以 [inhomo] 前缀打印
+		// 任一子命令启动前统一建好配置（~/.inhomo/config.yaml + INHOMO_* env + 该命令 flag），
+		// 挂到 cmd.Context 供各 RunE 用 cfgOf 取（见 config.go / ADR-0009）。
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error { return bindConfig(cmd) },
 	}
 	root.PersistentFlags().String(flagController, "127.0.0.1:9090",
 		"mihomo external-controller：TCP 如 127.0.0.1:9090，或 Unix socket 如 unix:///tmp/verge/verge-mihomo.sock")
@@ -52,9 +55,10 @@ func Execute() {
 // newClient 按命令的 flag 建好 logstream 客户端，装上连接成功提示（各命令文案不同，经 connectedMsg 传入）、
 // 通用重连提示，并打印启动行；返回客户端与订阅级别。audit/logs/record 共享这套连接脚手架。
 func newClient(cmd *cobra.Command, connectedMsg string) (*logstream.Client, string) {
-	controller, _ := cmd.Flags().GetString(flagController)
-	secret, _ := cmd.Flags().GetString(flagSecret)
-	level, _ := cmd.Flags().GetString(flagLevel)
+	v := cfgOf(cmd)
+	controller := v.GetString(flagController)
+	secret := v.GetString(flagSecret)
+	level := v.GetString(flagLevel)
 
 	client := logstream.New(controller, secret)
 	client.OnConnect = func() {

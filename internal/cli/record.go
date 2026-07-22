@@ -53,7 +53,7 @@ func openStore(cmd *cobra.Command) (*store.Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("无法确定 home 目录：%w", err)
 	}
-	dbFlag, _ := cmd.Flags().GetString(flagDB)
+	dbFlag := cfgOf(cmd).GetString(flagDB)
 	dbPath := resolveDBPath(dbFlag, home)
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("创建目录 %s：%w", filepath.Dir(dbPath), err)
@@ -102,7 +102,7 @@ func recordInto(ctx context.Context, cmd *cobra.Command, st *store.Store, connec
 	// 并行轮询 /connections 记录流量字节（与 /logs 流同一进程、同一 client）。
 	// 用 WaitGroup 等它收尾：ctx 取消后 poller 要「落一次仍活跃的连接」，必须在上层 Close 前完成，
 	// 否则 Close 先置 closed → 那批终值被 AddTraffic 拒写而丢失。
-	interval, _ := cmd.Flags().GetDuration(flagTrafficInt)
+	interval := cfgOf(cmd).GetDuration(flagTrafficInt)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {

@@ -46,7 +46,7 @@ func isLoopbackAddr(addr string) bool {
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
-	addr, _ := cmd.Flags().GetString(flagAddr)
+	addr := cfgOf(cmd).GetString(flagAddr)
 	if !isLoopbackAddr(addr) {
 		fmt.Fprintf(os.Stderr, "[inhomo] ⚠ --addr %s 非本机回环：Web 接口无鉴权，会把你的访问历史暴露给该网络。\n", addr)
 	}
