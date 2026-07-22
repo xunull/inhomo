@@ -79,9 +79,12 @@ inhomo 从中解析出：进程（`curl`）、目的 host/端口（`example.com:
 预编译二进制（macOS / Linux，各 arm64 + amd64）经 Homebrew tap 分发，装完即用、无需 Go 工具链：
 
 ```bash
-brew tap xunull/tap       # tap 仓库：github.com/xunull/homebrew-tap
-brew install inhomo       # 或一步到位：brew install xunull/tap/inhomo
+brew tap xunull/tap        # tap 仓库：github.com/xunull/homebrew-tap
+brew trust xunull/tap      # Homebrew 6.x 起：信任第三方 tap，不加这步 install 会被拒
+brew install inhomo        # 或一步到位：brew install xunull/tap/inhomo
 ```
+
+> **`brew trust` 是必需的一步**：Homebrew 6.x 起对第三方 tap 加了信任门，未 `brew trust` 就 `brew install` 会报 `Refusing to load formula ... from untrusted tap`。这是 Homebrew 的安全机制，非本项目所能免除；`brew trust xunull/tap`（或 `brew trust --formula xunull/tap/inhomo` 只信任单个 formula）后即可正常安装。
 
 升级 `brew upgrade inhomo`，卸载 `brew uninstall inhomo`。装完仍需一个在运行的 mihomo（见下）。
 
