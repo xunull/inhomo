@@ -5,7 +5,7 @@ package main
 import "github.com/xunull/inhomo/internal/cli"
 
 // version 是构建期注入位：裸构建为 "dev"，发布经 ldflags `-X main.version=<tag>` 注入具体版本
-// （由「打包分发」的 goreleaser 流水线注入）。
+// （由发布流水线 .github/workflows/release.yml 在打 tag 时注入；本地预演见 `make dist`）。
 var version = "dev"
 
 func main() {

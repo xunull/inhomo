@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// 注入的版本号要能从 `inhomo version` 与 `inhomo --version` 两处读出来（发布时 goreleaser 注入的就是它）。
+// 注入的版本号要能从 `inhomo version` 与 `inhomo --version` 两处读出来（发布时 CI 经 ldflags 注入的就是它）。
 func TestVersion_printsInjected(t *testing.T) {
 	const want = "v0.9.9-test"
 

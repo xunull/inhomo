@@ -1,0 +1,72 @@
+name: release
+
+# 打 vX.Y.Z tag 触发：各平台原生构建二进制 → 汇总发一个 GitHub Release。
+#
+# 为何原生矩阵而非跨编译：DuckDB 驱动带各平台预编译静态库（GNU libstdc++ / Apple libc++ ABI），
+# zig 跨编译会 `typeinfo` 链接失败，goreleaser 2.17 也无 prebuilt builder。让每个平台在其**原生**
+# runner 上用原生工具链构建，与 .a 同 ABI，最稳。仅 tag 事件触发，CI 不自动打 tag（发版 = 手动推 tag）。
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # 发 Release 需写权限
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.goos }}/${{ matrix.goarch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14, goos: darwin, goarch: arm64 }
+          - { runner: macos-15-intel, goos: darwin, goarch: amd64 }
+          - { runner: ubuntu-24.04, goos: linux, goarch: amd64 }
+          - { runner: ubuntu-24.04-arm, goos: linux, goarch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    # tag 经 env 传入、run: 里引号引用，避免把 ${{ github.ref_name }} 直插 shell（防恶意 tag 名注入）。
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 构建前端（go:embed 需要 web/dist）
+        run: make deps frontend
+      - name: 原生构建（CGO，注入版本）
+        run: CGO_ENABLED=1 go build -ldflags "-s -w -X main.version=$TAG" -o inhomo .
+      - name: 打包 tar.gz
+        run: tar -czf "inhomo_${TAG}_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz" inhomo LICENSE README.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inhomo_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: inhomo_*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: 汇总发布 Release
+    needs: build
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: 生成校验和
+        run: cd dist && sha256sum -- *.tar.gz > checksums.txt
+      - name: 发布 GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          gh release create "$TAG"
+          dist/*.tar.gz dist/checksums.txt
+          --repo "${{ github.repository }}"
+          --title "$TAG"
+          --generate-notes

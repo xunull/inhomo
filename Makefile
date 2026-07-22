@@ -1,4 +1,7 @@
-.PHONY: all deps frontend build install test clean
+.PHONY: all deps frontend build install test dist clean
+
+# 本地发布预演的注入版本（CI 用 tag；本地默认 dev）：make dist VERSION=v0.1.0
+VERSION ?= dev
 
 # make —— 构建前端(→ web/dist) + go build(内嵌)，产出单二进制 ./inhomo
 all: frontend build
@@ -14,6 +17,15 @@ build: ## go build（CGO，内嵌 web/dist）
 
 install: frontend ## go install（CGO，先重建前端再装到 $GOBIN/$GOPATH/bin，覆盖 PATH 上的 inhomo）
 	CGO_ENABLED=1 go install .
+
+dist: frontend ## 本地发布预演：注入版本 → 打当前平台 tar.gz + 校验和到 dist/（对应 CI 各 runner 的动作）
+	CGO_ENABLED=1 go build -ldflags "-s -w -X main.version=$(VERSION)" -o inhomo .
+	@mkdir -p dist
+	@OS=$$(go env GOOS); ARCH=$$(go env GOARCH); \
+	  A="inhomo_$(VERSION)_$${OS}_$${ARCH}.tar.gz"; \
+	  tar -czf "dist/$$A" inhomo LICENSE README.md; \
+	  ( cd dist && shasum -a 256 -- *.tar.gz > checksums.txt ); \
+	  echo "→ dist/$$A（版本：$$(./inhomo version)）"
 
 test: ## go test（CGO）+ web 单测（vitest）
 	CGO_ENABLED=1 go test ./...
