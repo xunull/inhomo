@@ -78,6 +78,29 @@ func TestRenderFormula_containsAllTargets(t *testing.T) {
 	}
 }
 
+// formula 要带 service 块，`brew services start inhomo` 才能后台常驻 serve。
+// 单个 service 块由 Homebrew 同时映射到 launchd(mac)/systemd(linux)——一块两覆。
+func TestRenderFormula_hasServiceBlock(t *testing.T) {
+	sums, err := parseChecksums([]byte(sampleChecksums))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := renderFormula("v0.1.0", sums)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{
+		`service do`,
+		`run [opt_bin/"inhomo", "serve"]`, // opt_bin：跨版本升级仍指向稳定路径
+		`keep_alive true`,                 // 崩溃/登录时重起，即开机自启
+		`log_path var/"log/inhomo.log"`,
+	} {
+		if !strings.Contains(out, s) {
+			t.Errorf("service 块缺少 %q\n---\n%s", s, out)
+		}
+	}
+}
+
 // 缺任一平台的 sha 都应 fail-closed：宁可不出 formula，也不出缺目标的 formula。
 func TestRenderFormula_failsOnMissingTarget(t *testing.T) {
 	sums, err := parseChecksums([]byte(sampleChecksums))

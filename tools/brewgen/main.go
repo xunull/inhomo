@@ -132,6 +132,16 @@ class Inhomo < Formula
     bin.install "inhomo"
   end
 
+  # brew services start inhomo → 后台常驻 inhomo serve。单个 service 块由 Homebrew
+  # 同时映射到 mac launchd / linux systemd（一块两覆）。服务读 ~/.inhomo/config.yaml 拿
+  # controller/secret 等，无需编辑 plist；请勿加 sudo（否则 $HOME 变 root，找不到你的配置）。
+  service do
+    run [opt_bin/"inhomo", "serve"]
+    keep_alive true
+    log_path var/"log/inhomo.log"
+    error_log_path var/"log/inhomo.log"
+  end
+
   test do
     assert_match version.to_s, shell_output("#{bin}/inhomo version")
   end
