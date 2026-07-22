@@ -4,6 +4,7 @@ import { SankeyChart } from 'echarts/charts'
 import { TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { FlowGraph } from '../api'
+import { fmtBytes } from '../format'
 
 // 只注册用到的：Sankey + Tooltip + Canvas 渲染器（tree-shaking，随本页懒加载成独立 chunk）。
 echarts.use([SankeyChart, TooltipComponent, CanvasRenderer])
@@ -20,10 +21,13 @@ type EchartsParam = {
 export default function TopologyChart({
   graph,
   height = 520,
+  byteMetric = false,
   onNodeClick,
 }: {
   graph: FlowGraph
   height?: number
+  // byteMetric：边权是否字节口径——决定 tooltip 数值用 fmtBytes（字节）还是原样计数（连接数）。
+  byteMetric?: boolean
   onNodeClick?: (dim: string, key: string) => void
 }) {
   const elRef = useRef<HTMLDivElement>(null)
@@ -59,13 +63,15 @@ export default function TopologyChart({
     if (!chart) return
     // 边 tooltip 去掉节点名的层前缀（process:/node:），显示友好名。
     const strip = (s?: string) => (s ?? '').replace(/^[^:]+:/, '')
+    // 边权数值：字节口径用 fmtBytes，连接数口径原样显示计数。
+    const fmtVal = (v?: number) => (byteMetric ? fmtBytes(v ?? 0) : String(v ?? 0))
     chart.setOption(
       {
         tooltip: {
           trigger: 'item',
           formatter: (p: EchartsParam) =>
             p.dataType === 'edge'
-              ? `${strip(p.data.source)} → ${strip(p.data.target)}：${p.data.value}`
+              ? `${strip(p.data.source)} → ${strip(p.data.target)}：${fmtVal(p.data.value)}`
               : (p.data.label ?? p.name),
         },
         series: [
@@ -83,7 +89,7 @@ export default function TopologyChart({
       // notMerge：全量替换，避免数据变小时残留上一次的幽灵节点/边。
       { notMerge: true },
     )
-  }, [graph])
+  }, [graph, byteMetric])
 
   return <div ref={elRef} style={{ width: '100%', height }} />
 }

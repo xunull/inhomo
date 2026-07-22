@@ -12,6 +12,9 @@ import {
   detailPath,
   topologyPath,
   trafficPath,
+  FLOW_METRICS,
+  flowMetricFromParams,
+  isByteMetric,
 } from './api'
 
 describe('filterParams ↔ filterFromParams 往返不变量', () => {
@@ -175,5 +178,49 @@ describe('detailPath / topologyPath / trafficPath', () => {
     expect(topologyPath({ region: 'JP' }, '24h')).toBe('/topology?region=JP&since=24h')
     expect(topologyPath({ region: 'JP' })).toBe('/topology?region=JP')
     expect(trafficPath({}, '7d')).toBe('/traffic?since=7d')
+  })
+})
+
+describe('flowMetricFromParams（拓扑度量 URL 解析）', () => {
+  // URL 是拓扑度量的单一事实源：分享链接 / 刷新 / 前进后退都从这里还原；缺省 / 非法 → 连接数。
+  it('缺省 → 连接数 count', () => {
+    expect(flowMetricFromParams(new URLSearchParams(''))).toBe('count')
+  })
+
+  it('每个合法度量原样还原（与 FLOW_METRICS 白名单一致）', () => {
+    for (const { value } of FLOW_METRICS) {
+      expect(flowMetricFromParams(new URLSearchParams('metric=' + value))).toBe(value)
+    }
+  })
+
+  it('白名单外 → 回落连接数', () => {
+    expect(flowMetricFromParams(new URLSearchParams('metric=bogus'))).toBe('count')
+  })
+
+  it('空 metric= → 回落连接数', () => {
+    expect(flowMetricFromParams(new URLSearchParams('metric='))).toBe('count')
+  })
+})
+
+describe('isByteMetric（字节口径判定：驱动 fmtBytes 显示 + 抽样提示）', () => {
+  it('连接数 → 非字节', () => {
+    expect(isByteMetric('count')).toBe(false)
+  })
+
+  it('上行 / 下行 / 合计 → 字节', () => {
+    expect(isByteMetric('up')).toBe(true)
+    expect(isByteMetric('down')).toBe(true)
+    expect(isByteMetric('total')).toBe(true)
+  })
+})
+
+describe('FLOW_METRICS（拓扑度量选项单一事实源）', () => {
+  it('连接数为列首（URL 无参时的默认口径）', () => {
+    expect(FLOW_METRICS[0].value).toBe('count')
+  })
+
+  it('四个度量 + 中文标签，顺序 连接数/合计/上行/下行', () => {
+    expect(FLOW_METRICS.map((m) => m.value)).toEqual(['count', 'total', 'up', 'down'])
+    expect(FLOW_METRICS.map((m) => m.label)).toEqual(['连接数', '合计', '上行', '下行'])
   })
 })

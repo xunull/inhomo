@@ -187,8 +187,33 @@ export interface FlowGraph {
   links: FlowLink[]
 }
 
-export const getFlow = (f: Filter = EMPTY_FILTER, since = '1h', limit = 10) =>
-  getJSON<FlowGraph>('/api/flow' + qs(f, { since, limit }))
+// FlowMetric 是拓扑边权度量：连接数（count，全量「连接事件」）或字节（up/down/total，抽样「流量记录」）。
+// 是带宽度量 Metric 的超集——多一个 count。两种口径取自不同数据集（见 CONTEXT「流量拓扑」/ ADR-0008）。
+export type FlowMetric = 'count' | Metric
+
+// FLOW_METRICS：拓扑度量选项（单一事实源，驱动 Segmented 与 URL 校验）。连接数为列首 = URL 无参时的默认口径。
+export const FLOW_METRICS: { value: FlowMetric; label: string }[] = [
+  { value: 'count', label: '连接数' },
+  { value: 'total', label: '合计' },
+  { value: 'up', label: '上行' },
+  { value: 'down', label: '下行' },
+]
+
+// flowMetricFromParams：URL → 拓扑度量（缺省 / 白名单外 → 连接数）。与 filterFromParams 一样，URL 是单一事实源。
+export function flowMetricFromParams(p: URLSearchParams): FlowMetric {
+  const m = p.get('metric')
+  return FLOW_METRICS.some((x) => x.value === m) ? (m as FlowMetric) : 'count'
+}
+
+// isByteMetric：拓扑度量是否字节口径（抽样）——决定边权/tooltip 是否走 fmtBytes、是否亮出抽样提示。连接数 → false。
+export const isByteMetric = (m: FlowMetric): boolean => m !== 'count'
+
+export const getFlow = (
+  f: Filter = EMPTY_FILTER,
+  metric: FlowMetric = 'count',
+  since = '1h',
+  limit = 10,
+) => getJSON<FlowGraph>('/api/flow' + qs(f, { metric, since, limit }))
 
 // 带宽度量：上行 / 下行 / 合计（up+down）。驱动 /api/traffic 的 top-N 排序。
 export type Metric = 'up' | 'down' | 'total'

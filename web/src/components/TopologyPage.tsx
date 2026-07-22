@@ -1,12 +1,15 @@
 import { useMemo, useState } from 'react'
 import { useSearchParams, useNavigate, Link } from 'react-router'
-import { Button, Card, Select, Space, Tag, Typography } from 'antd'
+import { Button, Card, Segmented, Select, Space, Tag, Typography } from 'antd'
 import {
   getFlow,
   detailPath,
   filterFromParams,
   filterChips,
   withDim,
+  flowMetricFromParams,
+  isByteMetric,
+  FLOW_METRICS,
   TIME_WINDOWS,
   type Dimension,
 } from '../api'
@@ -24,15 +27,17 @@ export default function TopologyPage() {
   const paramKey = params.toString()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const filter = useMemo(() => filterFromParams(params), [paramKey])
-  // since 以 URL 为单一事实源（可分享、与详情页一致）；改时间窗写回 URL。
+  // since / metric 以 URL 为单一事实源（可分享、刷新、前进后退都保持）；改控件即写回 URL。
   const since = params.get('since') || '1h'
-  const setSince = (v: string) => {
+  const metric = flowMetricFromParams(params)
+  const byteMetric = isByteMetric(metric)
+  const setParam = (k: string, v: string) => {
     const next = new URLSearchParams(params)
-    next.set('since', v)
+    next.set(k, v)
     setParams(next, { replace: true })
   }
 
-  const state = useApi(() => getFlow(filter, since, 12), [filter, since, refreshKey])
+  const state = useApi(() => getFlow(filter, metric, since, 12), [filter, metric, since, refreshKey])
   const chips = filterChips(filter)
 
   return (
@@ -46,7 +51,14 @@ export default function TopologyPage() {
           </Tag>
         ))}
         <Text type="secondary">时间窗</Text>
-        <Select value={since} onChange={setSince} options={TIME_WINDOWS} style={{ width: 120 }} />
+        <Select value={since} onChange={(v) => setParam('since', v)} options={TIME_WINDOWS} style={{ width: 120 }} />
+        <Text type="secondary">度量</Text>
+        <Segmented value={metric} onChange={(v) => setParam('metric', String(v))} options={FLOW_METRICS} />
+        {byteMetric && (
+          <Text type="warning" style={{ fontSize: 12 }}>
+            字节口径为抽样，短连接可能漏计
+          </Text>
+        )}
         <Button onClick={() => setRefreshKey((k) => k + 1)}>立即刷新</Button>
       </Space>
       <Card size="small" title="App → 出境节点 流量拓扑（点节点钻取详情）">
@@ -59,6 +71,7 @@ export default function TopologyPage() {
           {(data) => (
             <TopologyChart
               graph={data}
+              byteMetric={byteMetric}
               onNodeClick={(dim, key) =>
                 navigate(detailPath(withDim(filter, dim as Dimension, key), since))
               }
