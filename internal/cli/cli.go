@@ -22,13 +22,14 @@ const (
 	flagTrafficInt = "traffic-interval"
 )
 
-func newRootCmd() *cobra.Command {
+func newRootCmd(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "inhomo",
 		Short:         "审计经由 mihomo 出站的明文 HTTP 泄露",
 		Long:          "inhomo 订阅 mihomo 的 /logs 流，审计经由代理出站的明文 HTTP 泄露。",
-		SilenceUsage:  true, // 运行期错误不再叠加 usage
-		SilenceErrors: true, // 错误由 Execute 统一以 [inhomo] 前缀打印
+		Version:       version, // 使 `inhomo --version` 可用；version 由 main 注入（见 version.go）
+		SilenceUsage:  true,    // 运行期错误不再叠加 usage
+		SilenceErrors: true,    // 错误由 Execute 统一以 [inhomo] 前缀打印
 		// 任一子命令启动前统一建好配置（~/.inhomo/config.yaml + INHOMO_* env + 该命令 flag），
 		// 挂到 cmd.Context 供各 RunE 用 cfgOf 取（见 config.go / ADR-0009）。
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error { return bindConfig(cmd) },
@@ -41,12 +42,14 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newLogsCmd())
 	root.AddCommand(newRecordCmd())
 	root.AddCommand(newServeCmd())
+	root.AddCommand(newVersionCmd(version))
 	return root
 }
 
 // Execute 是二进制入口：解析参数并运行对应子命令；出错时以 [inhomo] 前缀打印并退出 1。
-func Execute() {
-	if err := newRootCmd().Execute(); err != nil {
+// version 由 main 注入（裸构建为 "dev"，发布经 ldflags 注入具体版本）。
+func Execute(version string) {
+	if err := newRootCmd(version).Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "[inhomo]", err)
 		os.Exit(1)
 	}

@@ -68,9 +68,10 @@ func bindConfig(cmd *cobra.Command) error {
 // cfgOf 取该命令 PersistentPreRunE 建好的已解析配置。各读取点（连接参数/库路径/监听地址等）都经它，
 // 而不再直接 cmd.Flags().Get*，从而统一享有「flags > env > config > 默认」的优先级。
 //
-// 找不到即 panic：所有命令都经 root 的 PersistentPreRunE(bindConfig) 建好配置，到这说明有命令绕过了它
-// （如子命令自定义 PersistentPreRunE 覆盖了 root 的）——这是编程错误，应响亮失败，
-// 而非静默退化成 flag-only 把 config/env 丢掉（那会悄悄背离本票的优先级语义）。
+// 找不到即 panic：所有*读配置*的命令都经 root 的 PersistentPreRunE(bindConfig) 建好配置，到这说明
+// 有命令绕过了它（如子命令自定义 PersistentPreRunE 覆盖了 root 的）却仍来取配置——这是编程错误，
+// 应响亮失败，而非静默退化成 flag-only 把 config/env 丢掉（那会悄悄背离本票的优先级语义）。
+// 例外：version 子命令有意覆盖 bindConfig，但它不调 cfgOf，故不受此约束（见 version.go）。
 func cfgOf(cmd *cobra.Command) *viper.Viper {
 	v, ok := cmd.Context().Value(cfgCtxKey{}).(*viper.Viper)
 	if !ok {
