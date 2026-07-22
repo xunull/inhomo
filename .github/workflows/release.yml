@@ -55,18 +55,28 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
     steps:
+      - uses: actions/checkout@v4 # brewgen 需要仓库源码（tools/brewgen）
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
       - name: 生成校验和
         run: cd dist && sha256sum -- *.tar.gz > checksums.txt
+      - name: 生成 Homebrew formula
+        # tools/brewgen 纯 Go（无 CGO / 外部依赖），把 checksums.txt 渲染成 inhomo.rb 一并附到 Release。
+        # 首版 tap 引导（v0，手工）：从本 Release 下载 inhomo.rb，放进 xunull/homebrew-tap 仓库的
+        # Formula/ 即可 `brew install`。跨仓自动推送需 PAT / deploy key，v0 不引这层密钥复杂度，留作后续；
+        # 之后每次发版同样把新的 inhomo.rb 覆盖进 tap，用户即可 `brew upgrade`。
+        run: go run ./tools/brewgen -version "$TAG" -checksums dist/checksums.txt -out dist/inhomo.rb
       - name: 发布 GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >
           gh release create "$TAG"
-          dist/*.tar.gz dist/checksums.txt
+          dist/*.tar.gz dist/checksums.txt dist/inhomo.rb
           --repo "${{ github.repository }}"
           --title "$TAG"
           --generate-notes

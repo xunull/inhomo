@@ -1,4 +1,4 @@
-.PHONY: all deps frontend build install test dist clean
+.PHONY: all deps frontend build install test dist brew-formula clean
 
 # 本地发布预演的注入版本（CI 用 tag；本地默认 dev）：make dist VERSION=v0.1.0
 VERSION ?= dev
@@ -26,6 +26,9 @@ dist: frontend ## 本地发布预演：注入版本 → 打当前平台 tar.gz +
 	  tar -czf "dist/$$A" inhomo LICENSE README.md; \
 	  ( cd dist && shasum -a 256 -- *.tar.gz > checksums.txt ); \
 	  echo "→ dist/$$A（版本：$$(./inhomo version)）"
+
+brew-formula: ## 由 dist/checksums.txt 生成 Homebrew formula → dist/inhomo.rb（需 4 目标齐全的 checksums：CI 或下载的 Release checksums；本机 `make dist` 只含单平台会 fail-closed 报错）
+	go run ./tools/brewgen -version $(VERSION) -checksums dist/checksums.txt -out dist/inhomo.rb
 
 test: ## go test（CGO）+ web 单测（vitest）
 	CGO_ENABLED=1 go test ./...
