@@ -19,6 +19,10 @@ inhomo 从「自用脚本」走向可分发工具（「打包分发」epic）。
 
 `--controller`/`--secret` 不再是 flags-only——现在也可由 config 文件 / 环境变量提供；但**显式 flag 仍最高优先**，ADR-0003「持久 flag 跨子命令共享」的定位不变，只是多了两条更低优先的来源。
 
+## 被 ADR-0010 重访
+
+「内置默认」这一最底层，对 `controller` 而言不再是静态 `127.0.0.1:9090`：ADR-0010 让它先[自动发现本机 mihomo](0010-controller-autodiscovery.md)、发现不到才回退 9090。更高优先的三层（显式 flag > env > config）语义不变——任一层显式给了 `controller` 即完全不发现。
+
 ## v1 不做
 
 `--config` 自定义路径；配置热重载；按子命令分节的配置；把 secret 从明文配置挪到钥匙串。

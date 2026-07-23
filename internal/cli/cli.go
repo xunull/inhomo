@@ -35,7 +35,8 @@ func newRootCmd(version string) *cobra.Command {
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error { return bindConfig(cmd) },
 	}
 	root.PersistentFlags().String(flagController, "127.0.0.1:9090",
-		"mihomo external-controller：TCP 如 127.0.0.1:9090，或 Unix socket 如 unix:///tmp/verge/verge-mihomo.sock")
+		"mihomo external-controller：TCP 如 127.0.0.1:9090，或 Unix socket 如 unix:///tmp/verge/verge-mihomo.sock；"+
+			"不指定则自动发现本机 mihomo（Clash Verge Rev 等），发现不到回退 127.0.0.1:9090")
 	root.PersistentFlags().String(flagSecret, "", "external-controller 的 secret（未开启鉴权则留空）")
 
 	root.AddCommand(newAuditCmd())
@@ -62,6 +63,15 @@ func newClient(cmd *cobra.Command, connectedMsg string) (*logstream.Client, stri
 	controller := v.GetString(flagController)
 	secret := v.GetString(flagSecret)
 	level := v.GetString(flagLevel)
+
+	// 零参数智能默认：controller 无任何显式来源时，自动发现本机 mihomo（读客户端配置 → /version 探活 →
+	// 用第一个活的），发现不到则回退内置默认 127.0.0.1:9090。显式给了 controller 一律尊重、完全不发现
+	// （all-or-nothing）；secret「只填空、显式恒赢」。启动行透明打印来源/回退，secret 绝不出现。见 ADR-0010。
+	if !hasExplicitSource(cmd, v, flagController) {
+		var msg string
+		controller, secret, msg = discoverController(cmd, v, controller, secret)
+		fmt.Fprintf(os.Stderr, "[inhomo] %s\n", msg)
+	}
 
 	client := logstream.New(controller, secret)
 	client.OnConnect = func() {

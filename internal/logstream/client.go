@@ -49,14 +49,24 @@ type ConnMeta struct {
 // ErrAuth 表示鉴权失败（secret 不正确）——不可重试的致命错误。
 var ErrAuth = errors.New("鉴权失败：external-controller secret 不正确")
 
-// FetchConnections 拉取一次 /connections 快照（普通 GET，复用同一 http 传输/鉴权）。
-func (c *Client) FetchConnections(ctx context.Context) (*ConnSnapshot, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/connections", nil)
+// newGET 建一个到 c.BaseURL+path 的 GET 请求并带上 secret 鉴权头（若有）。
+// /connections、/version、/logs 三处 GET 调用点共用，避免各自重复拼鉴权头。
+func (c *Client) newGET(ctx context.Context, path string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
 	if c.Secret != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Secret)
+	}
+	return req, nil
+}
+
+// FetchConnections 拉取一次 /connections 快照（普通 GET，复用同一 http 传输/鉴权）。
+func (c *Client) FetchConnections(ctx context.Context) (*ConnSnapshot, error) {
+	req, err := c.newGET(ctx, "/connections")
+	if err != nil {
+		return nil, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -75,6 +85,22 @@ func (c *Client) FetchConnections(ctx context.Context) (*ConnSnapshot, error) {
 		return nil, err
 	}
 	return &snap, nil
+}
+
+// Alive 探测该控制器是否可用：GET /version 返回 200 即视为可用（端点在跑；若开了鉴权，则所带 secret 也被接受）。
+// 供 CLI 层零参数自动发现的探活用（见 internal/cli/discover.go）：带上 secret（若有）、复用同一
+// TCP / unix socket 传输，超时由传入的 ctx 控制（本机/socket 探活近乎瞬时，超时只在不可达时才吃满）。
+func (c *Client) Alive(ctx context.Context) bool {
+	req, err := c.newGET(ctx, "/version")
+	if err != nil {
+		return false
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // Client 连接单个 mihomo external-controller。
@@ -177,16 +203,13 @@ func (c *Client) Run(ctx context.Context, level string, handle func(LogMessage))
 // stream 建立一次连接并阻塞式地把每条日志交给 handle，直到出错或 ctx 取消。
 // 返回的 connected 表示本次是否已成功连上（HTTP 200）——用于区分"配置问题"与"中途断开"。
 func (c *Client) stream(ctx context.Context, level string, handle func(LogMessage)) (connected bool, err error) {
-	u := c.BaseURL + "/logs"
+	path := "/logs"
 	if q := (url.Values{"level": {level}}).Encode(); level != "" {
-		u += "?" + q
+		path += "?" + q
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := c.newGET(ctx, path)
 	if err != nil {
 		return false, err
-	}
-	if c.Secret != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Secret)
 	}
 
 	resp, err := c.http.Do(req)
