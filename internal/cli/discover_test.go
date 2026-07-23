@@ -65,6 +65,53 @@ func TestCandidatesFrom(t *testing.T) {
 	})
 }
 
+// mihomoNativeConfigYAML 是一份「被定制过」的裸 mihomo 配置 fixture：非默认端口 9091 + secret、无 unix socket。
+// 默认 9090 无 secret 的裸 mihomo 由 T39 的兜底直接覆盖，不必读配置；本 fixture 正对应必须读配置才连得上的那类。
+const mihomoNativeConfigYAML = `mixed-port: 7890
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9091
+secret: bare-secret-abc
+`
+
+// TestCandidatesFrom_bareMihomo 补裸 mihomo 式配置的解析单测（T40 验收）：非默认端口 + secret → 单个 TCP 候选带 secret。
+// 复用 T39 的 candidatesFrom，不新造解析器。
+func TestCandidatesFrom_bareMihomo(t *testing.T) {
+	got := candidatesFrom([]byte(mihomoNativeConfigYAML), "mihomo")
+	want := discovered{controller: "127.0.0.1:9091", secret: "bare-secret-abc", source: "mihomo"}
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("裸 mihomo 配置应得单个 TCP 候选 %+v，得 %+v", want, got)
+	}
+}
+
+// TestMihomoNativeConfigSources 断言裸 mihomo 默认配置路径 = ~/.config/mihomo/config.yaml、来源标签 mihomo。
+func TestMihomoNativeConfigSources(t *testing.T) {
+	got := mihomoNativeConfigSources("/home/u")
+	if len(got) != 1 {
+		t.Fatalf("应给一处候选路径，得 %d", len(got))
+	}
+	if want := filepath.Join("/home", "u", ".config", "mihomo", "config.yaml"); got[0].path != want {
+		t.Errorf("路径=%q，期望 %q", got[0].path, want)
+	}
+	if got[0].source != "mihomo" {
+		t.Errorf("来源=%q，期望 mihomo", got[0].source)
+	}
+}
+
+// TestDiscoverySources 钉死固定来源顺序：Clash Verge Rev（v0 主场景）在前、裸 mihomo 在后。
+func TestDiscoverySources(t *testing.T) {
+	got := discoverySources("/home/u")
+	if len(got) < 2 {
+		t.Fatalf("应含 Verge + 裸 mihomo 两源，得 %d：%+v", len(got), got)
+	}
+	if got[0].source != "Clash Verge Rev" {
+		t.Errorf("首源=%q，期望 Clash Verge Rev（优先）", got[0].source)
+	}
+	if got[len(got)-1].source != "mihomo" {
+		t.Errorf("末源=%q，期望 mihomo（裸 mihomo 在后）", got[len(got)-1].source)
+	}
+}
+
 // TestGatherCandidates 覆盖多来源汇聚：可读的解析出候选，缺失/不可读的静默跳过（守护进程不因某客户端未装而报错）。
 func TestGatherCandidates(t *testing.T) {
 	readFile := func(path string) ([]byte, error) {

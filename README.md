@@ -200,7 +200,9 @@ open http://127.0.0.1:8464/
 
 **零参数即用**：不带 `--controller`（也没设 `INHOMO_CONTROLLER` 环境变量、`~/.inhomo/config.yaml` 里也没写 `controller`）时，`serve` / `record` / `audit` / `logs` 会自动发现本机 mihomo 并连上，无需再手敲 `--controller unix://… --secret …`。
 
-- **它怎么找**：读本机 [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev) 生成的运行时 mihomo 配置（macOS 在 `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/config.yaml`，Linux 在对应 app-data 目录），取出 `external-controller`（TCP）、`external-controller-unix`（socket）与 `secret`，逐个用 `/version` 探活，用**第一个活的**（unix socket 优先）。
+- **它怎么找**：按固定优先级读本机已知客户端的运行时 mihomo 配置，取出 `external-controller`（TCP）、`external-controller-unix`（socket）与 `secret`，逐个用 `/version` 探活，用**第一个活的**（同一配置内 unix socket 优先）。支持的客户端（来源顺序）：
+    1. **[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev)**（GUI，主场景）：macOS 在 `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/config.yaml`，Linux 在对应 app-data 目录。
+    2. **裸 mihomo**（`~/.config/mihomo/config.yaml`）：覆盖跑在非默认端口、或设了 secret 的裸 mihomo（默认 `127.0.0.1:9090`、无 secret 的那种由下面的回退直接覆盖，无需读配置）。
 - **发现不到就回退**：没装 Verge、或它没在跑 → 回退到 `127.0.0.1:9090` 照常连（原本 9090 上的裸 mihomo 零参数仍能用）。启动行会明确提示是「自动发现」还是「回退」。
 - **显式恒赢（all-or-nothing）**：只要你显式给了 `--controller`（或 env / 配置文件里写了 `controller`），就**完全不发现**、原样尊重你的值。
 - **不泄密**：启动行只打印发现到的 controller 与来源客户端，**secret 绝不打印/记录**。
@@ -213,7 +215,7 @@ open http://127.0.0.1:8464/
 
 决策与优先级细节见 ADR-0010（并重访了 ADR-0009 的「内置默认」层）。
 
-> 端口非默认、或设了 secret 的**裸 mihomo**（非 Verge）暂不自动读其配置——那是后续工单（T40）。这类目前仍需显式 `--controller`/`--secret`，或把它们写进 `~/.inhomo/config.yaml`。
+> 只读上述已知客户端的配置。其它来源（如把 mihomo 装在自定义 `-d` 目录、或用别的 GUI）暂不自动发现——显式给 `--controller`/`--secret`，或写进 `~/.inhomo/config.yaml` 即可。
 
 ## 配置
 

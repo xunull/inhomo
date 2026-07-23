@@ -102,6 +102,19 @@ func applyDiscovery(fallbackController, secret string, secretExplicit bool, disc
 	return disc.controller, finalSecret, fmt.Sprintf("从 %s 自动发现 controller %s", disc.source, disc.controller)
 }
 
+// discoverySources 返回本机所有已知客户端的 mihomo 配置候选路径，按固定优先级排列：
+// Clash Verge Rev（GUI，v0 主场景）在前，裸 mihomo（~/.config/mihomo）在后；都活时 firstLive 取前者。
+// 新增客户端只需往这里再拼一条源，解析器/探活/优先级全复用（ADR-0010）。
+func discoverySources(home string) []configSource {
+	return append(vergeConfigSources(home), mihomoNativeConfigSources(home)...)
+}
+
+// mihomoNativeConfigSources 返回裸 mihomo 的默认配置路径（mihomo -d 的默认目录 ~/.config/mihomo，跨平台一致）。
+// 覆盖「被定制过」的裸 mihomo（换了端口 / 设了 secret）；默认 9090 无 secret 的那种由兜底直接覆盖、无需读此。
+func mihomoNativeConfigSources(home string) []configSource {
+	return []configSource{{path: filepath.Join(home, ".config", "mihomo", "config.yaml"), source: "mihomo"}}
+}
+
 // vergeConfigSources 返回本机 Clash Verge Rev 运行时 mihomo 配置的候选路径（按 OS）。
 // Verge 把运行时 external-controller/secret 写进它自己 app-data 目录下的 config.yaml。
 func vergeConfigSources(home string) []configSource {
@@ -151,6 +164,6 @@ func discoverController(cmd *cobra.Command, v *viper.Viper, fallbackController, 
 	if err != nil {
 		return applyDiscovery(fallbackController, secret, secretExplicit, discovered{}, false)
 	}
-	disc, found := firstLive(gatherCandidates(vergeConfigSources(home), os.ReadFile), livenessProbe)
+	disc, found := firstLive(gatherCandidates(discoverySources(home), os.ReadFile), livenessProbe)
 	return applyDiscovery(fallbackController, secret, secretExplicit, disc, found)
 }
