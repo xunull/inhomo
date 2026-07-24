@@ -36,9 +36,10 @@ func newReportCmd() *cobra.Command {
 	cmd.Flags().String(flagAddr, "127.0.0.1:8566", "要查询的运行中 serve 地址（report 从它的 /api 取聚合）")
 	cmd.Flags().String("since", "7d", "统计时间窗（如 7d / 24h）")
 	cmd.Flags().String("out", "", "把报告写入该文件（留空则打印到终端）")
-	cmd.Flags().String("ai-model", "claude-sonnet-5", "生成用的 Claude 模型")
-	cmd.Flags().String("ai-api-key", "", "Anthropic API key（建议用 INHOMO_AI_API_KEY 环境变量或配置文件，勿写进命令行历史）")
-	cmd.Flags().String("ai-base-url", "", "Anthropic API 基址（默认官方；可指向兼容代理 / 测试 stub）")
+	cmd.Flags().String("ai-provider", "anthropic", "AI 提供方：anthropic 或 openai（openai 兼容 DeepSeek/OpenAI/Groq/Ollama 等）")
+	cmd.Flags().String("ai-model", "claude-sonnet-5", "生成用的模型（换 provider 时也要换：如 DeepSeek 用 deepseek-chat）")
+	cmd.Flags().String("ai-api-key", "", "API key（建议用 INHOMO_AI_API_KEY 环境变量或配置文件，勿写进命令行历史）")
+	cmd.Flags().String("ai-base-url", "", "API 基址（默认各 provider 官方；DeepSeek 用 https://api.deepseek.com）")
 	return cmd
 }
 
@@ -64,12 +65,12 @@ func runReport(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("从 serve %s 取聚合失败（serve 在跑吗？）：%w", addr, err)
 	}
 
-	provider := ai.NewAnthropic(apiKey, model)
-	if base := v.GetString("ai-base-url"); base != "" {
-		provider.BaseURL = base
+	provider, err := ai.New(v.GetString("ai-provider"), apiKey, model, v.GetString("ai-base-url"))
+	if err != nil {
+		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "[inhomo] 生成隐私周报（近 %s，模型 %s）…\n", since, model)
+	fmt.Fprintf(os.Stderr, "[inhomo] 生成隐私周报（近 %s，%s/%s）…\n", since, v.GetString("ai-provider"), model)
 	text, err := provider.Generate(ctx, buildReportPrompt(data))
 	if err != nil {
 		return fmt.Errorf("生成失败：%w", err)

@@ -6,7 +6,10 @@ office-hours 设计《AI 隐私分析师之「域名归类」》Approach B 第�
 
 - **只发聚合，绝不发原始域名**：report 只取**聚合**素材——追踪器占比 + 归属公司（公司名，非域名）、出境节点 top、节点地区 top。这些都不含「你访问了哪些站」。喂给 LLM 的提示词由 `buildReportPrompt` 从这些聚合拼成，`reportData` 结构本身就不含 host 字段——隐私是**构造保证**，非事后过滤。
 - **查运行中的 serve、不直接开库**：`inhomo report` 从运行中的 `serve` 的 `/api`（`/api/trackers`、`/api/aggregate?by=node|region`）取聚合，而非直接开 DuckDB。原因：DuckDB **单进程持锁**，守护 serve 正在写库时 report 直接开库会 `Conflicting lock`。走 HTTP 既避锁，又复用 T42 的接口。代价：report 需要 serve 在跑（`--addr` 指定，默认 `127.0.0.1:8566`）。
-- **provider 抽象成接口**：`ai.Provider{ Generate(ctx, prompt) }`，v0 实现 Anthropic Messages API（`x-api-key` + `anthropic-version` 头）。抽象便于注入 stub 测试、也为 T43 复用与将来换/加提供方留位。`--ai-base-url` 可指向兼容代理或测试 stub。
+- **provider 抽象成接口**：`ai.Provider{ Generate(ctx, prompt) }`，`ai.New(provider,…)` 工厂按名分发。两个实现：
+  - **anthropic**：Anthropic Messages API（`x-api-key` + `anthropic-version` 头，响应 `content[].text`）。
+  - **openai**：OpenAI 兼容 Chat Completions（`Authorization: Bearer`、`/chat/completions`，响应 `choices[].message.content`）——一套覆盖 **DeepSeek / OpenAI / Groq / 本地 Ollama** 等（各自基址经 `--ai-base-url` 传入，如 DeepSeek 用 `https://api.deepseek.com`）。
+  抽象便于注入 stub 测试、也为 T43 复用。**注意 DeepSeek 等不是 Anthropic 兼容**（鉴权头/路径/响应形态都不同），故不能只改 `--ai-base-url` 让 anthropic provider 连 DeepSeek，必须选 `--ai-provider openai`。
 - **key 走 env / 配置，不进命令行历史**：API key 由 `INHOMO_AI_API_KEY` 环境变量或 `~/.inhomo/config.yaml` 的 `ai-api-key` 提供（沿用 viper flag>env>config 优先级）；虽注册了同名 flag 供优先级链，但**建议勿在命令行明文传**。未配置 → 明确报错、不静默。
 
 ## 取舍

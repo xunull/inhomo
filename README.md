@@ -214,17 +214,21 @@ inhomo tracker update    # 拉取/更新域名表（约 10MB，~3.8 万条已知
 
 ```bash
 export INHOMO_AI_API_KEY=sk-...            # 或写进 ~/.inhomo/config.yaml 的 ai-api-key（勿在命令行明文传）
-inhomo report --since 7d                   # 默认查 127.0.0.1:8566 的 serve、模型 claude-sonnet-5
-inhomo report --addr 127.0.0.1:8566 --ai-model claude-haiku-4-5-20251001
+inhomo report --since 7d                   # 默认 Anthropic、模型 claude-sonnet-5、查 127.0.0.1:8566 的 serve
+
+# 用 DeepSeek 等 OpenAI 兼容平台：选 openai provider + 给它的基址/模型（DeepSeek 不是 Anthropic 兼容）
+inhomo report --ai-provider openai --ai-base-url https://api.deepseek.com --ai-model deepseek-chat --since 7d
 ```
 
 | Flag | 默认 | 说明 |
 |---|---|---|
 | `--addr` | `127.0.0.1:8566` | 要查询的运行中 serve 地址（从它的 `/api` 取聚合） |
 | `--since` | `7d` | 统计时间窗（如 `7d` / `24h`） |
-| `--ai-model` | `claude-sonnet-5` | 生成用的 Claude 模型 |
-| `--ai-api-key` | `""` | Anthropic API key（建议用 `INHOMO_AI_API_KEY` 环境变量或配置文件） |
-| `--ai-base-url` | `""` | Anthropic API 基址（默认官方；可指向兼容代理 / 测试 stub） |
+| `--out` | `""` | 把报告写入该文件（留空则打印到终端） |
+| `--ai-provider` | `anthropic` | `anthropic` 或 `openai`（`openai` 覆盖 DeepSeek / OpenAI / Groq / 本地 Ollama 等） |
+| `--ai-model` | `claude-sonnet-5` | 生成用的模型（换 provider 时也要换，如 DeepSeek 用 `deepseek-chat`） |
+| `--ai-api-key` | `""` | API key（建议用 `INHOMO_AI_API_KEY` 环境变量或配置文件） |
+| `--ai-base-url` | `""` | API 基址（默认各 provider 官方；DeepSeek 用 `https://api.deepseek.com`） |
 
 ## 本机 mihomo 自动发现
 
