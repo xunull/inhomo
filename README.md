@@ -167,6 +167,8 @@ open http://127.0.0.1:8566/
 15:04:05  明文HTTP泄露  example.com:80  →  🇺🇸美国HY2-06|1.0X [US]  规则:GEOIP  (过去 5m0s 内又 ×3)
 ```
 
+先跑一次 [`inhomo tracker update`](#inhomo-tracker) 后，命中已知追踪器的泄露行会额外标注归属公司，例如 `… 规则:GEOIP  [已知追踪器 · Google]`。未拉取数据则只提示一次、照常审计（不报错）。
+
 ### `inhomo logs`
 
 原样查看 mihomo 日志（逐行 payload + 级别标记），用于排查连通性或直接观察内核在打什么。
@@ -195,6 +197,16 @@ open http://127.0.0.1:8566/
 | `--addr` | `127.0.0.1:8566` | Web 监听地址（默认仅本机、无鉴权；填非回环地址会打印警告） |
 
 > 记录后台跑；一旦记录侧断开（如 `/logs` 连接失败），会连带关闭 Web，避免「记录已死、Web 空转」。
+
+### `inhomo tracker`
+
+管理追踪器识别数据（DuckDuckGo Tracker Radar 的「域名 → 归属公司」表）。数据是 CC BY-NC-SA 4.0、不随二进制分发，改由本命令**运行期拉取**到 `~/.inhomo/tracker-radar.json`，之后**离线**比对（见 ADR-0011）。
+
+```bash
+inhomo tracker update    # 拉取/更新域名表（约 10MB，~3.8 万条已知追踪器域名）
+```
+
+拉取后，`audit` 的泄露行会标注命中的已知追踪器及归属公司。未拉取或断网时归类器为空，泄露行不标注、不报错（优雅退化）。v0 只做「已知追踪器 + 归属」，细粒度类别（广告/分析/…）留作后续。
 
 ## 本机 mihomo 自动发现
 
@@ -358,6 +370,7 @@ inhomo 需要 mihomo 的 `external-controller`。两种形态都支持：
 | [0008](./docs/adr/0008-traffic-bytes-from-connections.md) | 历史流量分析：接 `/connections` 拿字节（独立 traffic 数据集） |
 | [0009](./docs/adr/0009-config-file-viper-precedence.md) | 引入配置文件（Viper：config + env + flag 优先级） |
 | [0010](./docs/adr/0010-controller-autodiscovery.md) | 本机 mihomo 自动发现（零参数连上，回退 9090） |
+| [0011](./docs/adr/0011-tracker-radar-classification.md) | 追踪器识别：Tracker Radar 运行期拉取 + 进程内归类 |
 
 关于 mihomo `/logs` 的技术细节（格式、级别、投递语义、留存）见 [`docs/mihomo-logs.md`](./docs/mihomo-logs.md)。
 

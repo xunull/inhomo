@@ -14,6 +14,7 @@ import (
 	"github.com/xunull/inhomo/internal/detect"
 	"github.com/xunull/inhomo/internal/logstream"
 	"github.com/xunull/inhomo/internal/sink"
+	"github.com/xunull/inhomo/internal/tracker"
 )
 
 func newAuditCmd() *cobra.Command {
@@ -48,6 +49,17 @@ func runAudit(cmd *cobra.Command, _ []string) error {
 		defer f.Close()
 		writer = sink.NewJSONLWriter(f)
 		fmt.Fprintf(os.Stderr, "[inhomo] 泄露事件将追加写入 %s\n", outPath)
+	}
+
+	// 追踪器识别数据（运行期 `inhomo tracker update` 拉取）：加载失败/未拉取 → 空归类器，泄露行不标注、不报错。
+	home, _ := os.UserHomeDir() // 取不到 home 时 Load 落到不存在路径 → 空归类器，正是要的降级，故有意丢弃此错误
+	classifier, loadErr := tracker.Load(tracker.CachePath(home))
+	switch {
+	case loadErr != nil:
+		fmt.Fprintf(os.Stderr, "[inhomo] 追踪器数据损坏，忽略（%v）；跑 `inhomo tracker update` 可重拉\n", loadErr)
+		classifier = &tracker.Classifier{}
+	case classifier.Len() == 0:
+		fmt.Fprintln(os.Stderr, "[inhomo] 未加载追踪器数据（跑 `inhomo tracker update` 后可在泄露行标注已知追踪器）")
 	}
 
 	// 终端聚合器：按 (节点,host) 时间窗去重，只冒一次不刷屏。
@@ -90,7 +102,7 @@ func runAudit(cmd *cobra.Command, _ []string) error {
 
 		// 可用层：按 (节点,host) 聚合，终端只冒一次、不刷屏。
 		if emit, suppressed := agg.Observe(aggregate.Key{Node: leak.Node, Host: leak.Host}, now); emit {
-			fmt.Println(formatLeakLine(now, leak, suppressed, window))
+			fmt.Println(formatLeakLine(now, leak, suppressed, window, classifier))
 		}
 
 		// 运行统计：按时间节流刷新（实时可见，低流量也不会久无输出）。
@@ -121,12 +133,25 @@ func parseHTTPPorts(s string) map[int]bool {
 	return m
 }
 
-// formatLeakLine 渲染一条终端泄露行；suppressed>0 时附上一窗被抑制（未显示）的次数。
-func formatLeakLine(now time.Time, leak detect.LeakEvent, suppressed int, window time.Duration) string {
+// formatLeakLine 渲染一条终端泄露行；命中已知追踪器时附归属标注；suppressed>0 时附一窗被抑制的次数。
+func formatLeakLine(now time.Time, leak detect.LeakEvent, suppressed int, window time.Duration, c *tracker.Classifier) string {
 	line := fmt.Sprintf("%s  明文HTTP泄露  %s:%d  →  %s [%s]  规则:%s",
 		now.Format("15:04:05"), leak.Host, leak.Port, leak.Node, leak.Region, leak.Rule)
+	line += trackerNote(c, leak.Host)
 	if suppressed > 0 {
 		line += fmt.Sprintf("  (过去 %s 内又 ×%d)", window, suppressed)
 	}
 	return line
+}
+
+// trackerNote 渲染泄露行尾的追踪器标注：已知 → "  [已知追踪器 · <归属>]"（无归属名时省略公司），未知 → ""。
+func trackerNote(c *tracker.Classifier, host string) string {
+	owner, known := c.Classify(host)
+	if !known {
+		return ""
+	}
+	if owner == "" {
+		return "  [已知追踪器]"
+	}
+	return "  [已知追踪器 · " + owner + "]"
 }
