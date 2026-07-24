@@ -54,6 +54,9 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       TAG: ${{ github.ref_name }}
+      # 对 xunull/homebrew-tap 有 Contents: write 的 fine-grained PAT（本仓库 secret）。
+      # 映射成 env 仅为让下方 `if` 能判它是否已配置（secrets 上下文不能直接用于 step 的 if）。
+      TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
     steps:
       - uses: actions/checkout@v4 # brewgen 需要仓库源码（tools/brewgen）
       - uses: actions/setup-go@v5
@@ -66,10 +69,8 @@ jobs:
       - name: 生成校验和
         run: cd dist && sha256sum -- *.tar.gz > checksums.txt
       - name: 生成 Homebrew formula
-        # tools/brewgen 纯 Go（无 CGO / 外部依赖），把 checksums.txt 渲染成 inhomo.rb 一并附到 Release。
-        # 首版 tap 引导（v0，手工）：从本 Release 下载 inhomo.rb，放进 xunull/homebrew-tap 仓库的
-        # Formula/ 即可 `brew install`。跨仓自动推送需 PAT / deploy key，v0 不引这层密钥复杂度，留作后续；
-        # 之后每次发版同样把新的 inhomo.rb 覆盖进 tap，用户即可 `brew upgrade`。
+        # tools/brewgen 纯 Go（无 CGO / 外部依赖），把 checksums.txt 渲染成 inhomo.rb 一并附到 Release；
+        # 随后「同步 formula 到 tap」步再把同一份 inhomo.rb 推进 xunull/homebrew-tap，用户即可 `brew upgrade`。
         run: go run ./tools/brewgen -version "$TAG" -checksums dist/checksums.txt -out dist/inhomo.rb
       - name: 发布 GitHub Release
         env:
@@ -80,3 +81,30 @@ jobs:
           --repo "${{ github.repository }}"
           --title "$TAG"
           --generate-notes
+
+      # 同步 formula 到 tap：brew 只认 tap 仓库里的 Formula/inhomo.rb（不看 Release 资产），故发完
+      # Release 后必须把同一份 inhomo.rb 推进 xunull/homebrew-tap，用户 `brew upgrade` 才看得到新版。
+      # 放在发 Release 之后：formula 的 url 指向本 Release 的资产，Release 先在才不会指向 404。
+      # 未配置 TAP_PUSH_TOKEN 时下面两步自动跳过（Release 照常发，回退手动覆盖 formula）。
+      - name: 检出 tap 仓库
+        if: ${{ env.TAP_PUSH_TOKEN != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: xunull/homebrew-tap
+          token: ${{ secrets.TAP_PUSH_TOKEN }}
+          path: tap
+      - name: 同步 formula 到 tap
+        if: ${{ env.TAP_PUSH_TOKEN != '' }}
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          cp ../dist/inhomo.rb Formula/inhomo.rb
+          if git diff --quiet -- Formula/inhomo.rb; then
+            echo "formula 无变化，跳过推送"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/inhomo.rb
+          git commit -m "inhomo $TAG"
+          git push
