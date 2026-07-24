@@ -208,6 +208,24 @@ inhomo tracker update    # 拉取/更新域名表（约 10MB，~3.8 万条已知
 
 拉取后，`audit` 的泄露行会标注命中的已知追踪器及归属公司。未拉取或断网时归类器为空，泄露行不标注、不报错（优雅退化）。v0 只做「已知追踪器 + 归属」，细粒度类别（广告/分析/…）留作后续。
 
+### `inhomo report`
+
+用 AI 把连接态势总结成自然语言隐私周报。**只把聚合**（追踪器占比 + 归属公司、出境节点 / 地区 top）喂给模型，**绝不发原始访问域名**（见 ADR-0012）。从**运行中的 `serve`** 的 `/api` 取聚合（避开 DuckDB 单写锁），故需先有一个 `serve` 在跑。
+
+```bash
+export INHOMO_AI_API_KEY=sk-...            # 或写进 ~/.inhomo/config.yaml 的 ai-api-key（勿在命令行明文传）
+inhomo report --since 7d                   # 默认查 127.0.0.1:8566 的 serve、模型 claude-sonnet-5
+inhomo report --addr 127.0.0.1:8566 --ai-model claude-haiku-4-5-20251001
+```
+
+| Flag | 默认 | 说明 |
+|---|---|---|
+| `--addr` | `127.0.0.1:8566` | 要查询的运行中 serve 地址（从它的 `/api` 取聚合） |
+| `--since` | `7d` | 统计时间窗（如 `7d` / `24h`） |
+| `--ai-model` | `claude-sonnet-5` | 生成用的 Claude 模型 |
+| `--ai-api-key` | `""` | Anthropic API key（建议用 `INHOMO_AI_API_KEY` 环境变量或配置文件） |
+| `--ai-base-url` | `""` | Anthropic API 基址（默认官方；可指向兼容代理 / 测试 stub） |
+
 ## 本机 mihomo 自动发现
 
 **零参数即用**：不带 `--controller`（也没设 `INHOMO_CONTROLLER` 环境变量、`~/.inhomo/config.yaml` 里也没写 `controller`）时，`serve` / `record` / `audit` / `logs` 会自动发现本机 mihomo 并连上，无需再手敲 `--controller unix://… --secret …`。
@@ -371,6 +389,7 @@ inhomo 需要 mihomo 的 `external-controller`。两种形态都支持：
 | [0009](./docs/adr/0009-config-file-viper-precedence.md) | 引入配置文件（Viper：config + env + flag 优先级） |
 | [0010](./docs/adr/0010-controller-autodiscovery.md) | 本机 mihomo 自动发现（零参数连上，回退 9090） |
 | [0011](./docs/adr/0011-tracker-radar-classification.md) | 追踪器识别：Tracker Radar 运行期拉取 + 进程内归类 |
+| [0012](./docs/adr/0012-ai-privacy-report.md) | AI 隐私周报：只发聚合、查运行中的 serve、provider 抽象 |
 
 关于 mihomo `/logs` 的技术细节（格式、级别、投递语义、留存）见 [`docs/mihomo-logs.md`](./docs/mihomo-logs.md)。
 

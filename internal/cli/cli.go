@@ -44,6 +44,7 @@ func newRootCmd(version string) *cobra.Command {
 	root.AddCommand(newRecordCmd())
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newTrackerCmd())
+	root.AddCommand(newReportCmd())
 	root.AddCommand(newVersionCmd(version))
 	return root
 }
