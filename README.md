@@ -124,7 +124,7 @@ make
 ./inhomo serve --controller 127.0.0.1:9090 --secret <你的secret>
 
 # 3) 浏览器打开
-open http://127.0.0.1:8464/
+open http://127.0.0.1:8566/
 ```
 
 产生一些流量（正常上网即可），仪表盘上就会出现 KPI、Top 域名/节点、时间曲线。
@@ -192,7 +192,7 @@ open http://127.0.0.1:8464/
 |---|---|---|
 | `--level` | `info` | 同 `record` |
 | `--db` | `~/.inhomo/connections.duckdb` | 同 `record` |
-| `--addr` | `127.0.0.1:8464` | Web 监听地址（默认仅本机、无鉴权；填非回环地址会打印警告） |
+| `--addr` | `127.0.0.1:8566` | Web 监听地址（默认仅本机、无鉴权；填非回环地址会打印警告） |
 
 > 记录后台跑；一旦记录侧断开（如 `/logs` 连接失败），会连带关闭 Web，避免「记录已死、Web 空转」。
 
@@ -234,7 +234,7 @@ controller: unix:///tmp/verge/verge-mihomo.sock
 secret: ""
 db: ~/.inhomo/connections.duckdb
 traffic-interval: 3s
-addr: 127.0.0.1:8464
+addr: 127.0.0.1:8566
 http-ports: "80"
 window: 5m
 ```
@@ -271,7 +271,7 @@ secret: ""
 >
 > **别和手动 `serve` 抢库**：服务已在写默认库，就别再手动 `inhomo serve`/`record` 开同一个库（DuckDB 单写锁，见「[隐私与并发约束](#隐私与并发约束)」）。
 >
-> 服务日志写在 `$(brew --prefix)/var/log/inhomo.log`；仪表盘照常在 `http://127.0.0.1:8464/`。
+> 服务日志写在 `$(brew --prefix)/var/log/inhomo.log`；仪表盘照常在 `http://127.0.0.1:8566/`。
 
 ## Web 分析接口
 
@@ -291,14 +291,14 @@ secret: ""
 示例：
 
 ```bash
-curl 'http://127.0.0.1:8464/api/summary'
+curl 'http://127.0.0.1:8566/api/summary'
 # {"total":41,"hosts":22,"processes":7,"nodes":2,"direct":4,"proxied":37,
 #  "http":11,"https":30,"earliest":"2026-07-18T14:19:44Z","latest":"2026-07-18T14:19:56Z"}
 
-curl 'http://127.0.0.1:8464/api/aggregate?by=host&since=24h&limit=5'
+curl 'http://127.0.0.1:8566/api/aggregate?by=host&since=24h&limit=5'
 # [{"key":"api.github.com","count":16},{"key":"chatgpt.com","count":3}, ...]
 
-curl 'http://127.0.0.1:8464/api/timeseries?since=1h&bucket=5m'
+curl 'http://127.0.0.1:8566/api/timeseries?since=1h&bucket=5m'
 # [{"ts":"2026-07-18T14:15:00Z","count":41}]
 ```
 
@@ -380,7 +380,7 @@ Makefile                make = 前端 + 内嵌 + go build
 
 ## 隐私与并发约束
 
-- **默认只绑本机、无鉴权**：`serve` 默认监听 `127.0.0.1:8464`。你的访问历史是敏感数据，不要把 `--addr` 改成非回环地址暴露到网络（会打印警告）。
+- **默认只绑本机、无鉴权**：`serve` 默认监听 `127.0.0.1:8566`。你的访问历史是敏感数据，不要把 `--addr` 改成非回环地址暴露到网络（会打印警告）。
 - **DuckDB 单写锁**：一个 `.duckdb` 文件同一时刻只能被一个进程写。因此**不要对同一个库同时跑 `record` 和 `serve`**（`serve` 已包含记录）。若另一个 inhomo 进程正锁着默认库，再开一个会报 `Conflicting lock` —— 换一个 `--db` 路径，或先停掉那个进程。
 - **数据不出机**：全部本地存储、本地查询，没有任何外发。
 

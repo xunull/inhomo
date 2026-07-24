@@ -28,7 +28,7 @@ func newServeCmd() *cobra.Command {
 		RunE:  runServe,
 	}
 	addRecordFlags(cmd)
-	cmd.Flags().String(flagAddr, "127.0.0.1:8464", "Web 服务监听地址（默认仅本机、无鉴权）")
+	cmd.Flags().String(flagAddr, "127.0.0.1:8566", "Web 服务监听地址（默认仅本机、无鉴权）")
 	return cmd
 }
 
