@@ -146,6 +146,23 @@ export const getSummary = (f: Filter = EMPTY_FILTER) => getJSON<Summary>('/api/s
 export const getAggregate = (by: Dimension, f: Filter = EMPTY_FILTER, since = '', limit = 20) =>
   getJSON<AggRow[]>('/api/aggregate' + qs(f, { by, since, limit }))
 
+// OwnerCount 是一家追踪器归属公司在切片内的连接数。
+export interface OwnerCount {
+  owner: string
+  count: number
+}
+
+// TrackerBreakdown 是 /api/trackers 的返回：切片内连接总数、命中已知追踪器的连接数、按归属公司 top-N。
+// 归类走本机离线数据（`inhomo tracker update` 拉取）；未拉取则 tracker=0、owners 为空。
+export interface TrackerBreakdown {
+  total: number
+  tracker: number
+  owners: OwnerCount[]
+}
+
+export const getTrackers = (f: Filter = EMPTY_FILTER, since = '', limit = 8) =>
+  getJSON<TrackerBreakdown>('/api/trackers' + qs(f, { since, limit }))
+
 export const getTimeseries = (f: Filter = EMPTY_FILTER, since = '1h', bucket = '5m') =>
   getJSON<TSPoint[]>('/api/timeseries' + qs(f, { since, bucket }))
 

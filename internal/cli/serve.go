@@ -17,6 +17,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/spf13/cobra"
 	"github.com/xunull/inhomo/internal/store"
+	"github.com/xunull/inhomo/internal/tracker"
 	"github.com/xunull/inhomo/web"
 )
 
@@ -68,8 +69,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		stop()
 	}()
 
+	// 追踪器识别数据（`inhomo tracker update` 拉取）：未拉取/损坏 → 空归类器，/api/trackers 全非追踪器、不报错。
+	classifier := loadClassifier()
+
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
-	registerRoutes(app, st)
+	registerRoutes(app, st, classifier)
 	if err := registerStatic(app); err != nil {
 		return err
 	}
@@ -158,7 +162,8 @@ func parseFilter(c *fiber.Ctx) (store.Filter, error) {
 }
 
 // registerRoutes 注册 Web 分析接口。handler 薄：解析过滤切片 + 调 store 查询 + 编码 JSON。
-func registerRoutes(app *fiber.App, st *store.Store) {
+// classifier 供 /api/trackers 做「host → 归属公司」归类（进程内、无网络）。
+func registerRoutes(app *fiber.App, st *store.Store, classifier *tracker.Classifier) {
 	badReq := func(c *fiber.Ctx, err error) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -256,6 +261,20 @@ func registerRoutes(app *fiber.App, st *store.Store) {
 			return svrErr(c, err)
 		}
 		return c.JSON(ag)
+	})
+
+	// /api/trackers?<过滤> —— 切片内「多少连接走了已知追踪器」+ 按归属公司 top-N（limit 默认 10）。
+	// host→归属 归类在 Go 侧做（DuckDB 无公共后缀函数）：取全量 host 计数 → 归类器归并。未拉取数据 → 全非追踪器。
+	app.Get("/api/trackers", func(c *fiber.Ctx) error {
+		f, err := parseFilter(c)
+		if err != nil {
+			return badReq(c, err)
+		}
+		hosts, err := st.HostCounts(f)
+		if err != nil {
+			return svrErr(c, err)
+		}
+		return c.JSON(computeTrackerBreakdown(hosts, classifier, c.QueryInt("limit", 8)))
 	})
 
 	// 未知 /api/* 返回 404 JSON（而非落到静态回退的 index.html，避免 client 把 HTML 当 JSON）。

@@ -5,6 +5,7 @@ import { topologyPath, trafficPath, type Dimension, type Filter } from '../api'
 import KpiBar from './KpiBar'
 import AggPanel from './AggPanel'
 import TimeSeriesChart from './TimeSeriesChart'
+import TrackerPanel from './TrackerPanel'
 import ConnTable from './ConnTable'
 
 const { Text } = Typography
@@ -82,6 +83,11 @@ export default function Dashboard({
       <div style={{ marginTop: 16 }}>
         <TimeSeriesChart filter={filter} since={since} bucket={bucket} refreshKey={refreshKey} />
       </div>
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24} xl={12}>
+          <TrackerPanel filter={filter} since={since} refreshKey={refreshKey} />
+        </Col>
+      </Row>
       {visibleTall.length > 0 && (
         <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
           {visibleTall.map((p) => (

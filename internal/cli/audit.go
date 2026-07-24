@@ -52,15 +52,7 @@ func runAudit(cmd *cobra.Command, _ []string) error {
 	}
 
 	// 追踪器识别数据（运行期 `inhomo tracker update` 拉取）：加载失败/未拉取 → 空归类器，泄露行不标注、不报错。
-	home, _ := os.UserHomeDir() // 取不到 home 时 Load 落到不存在路径 → 空归类器，正是要的降级，故有意丢弃此错误
-	classifier, loadErr := tracker.Load(tracker.CachePath(home))
-	switch {
-	case loadErr != nil:
-		fmt.Fprintf(os.Stderr, "[inhomo] 追踪器数据损坏，忽略（%v）；跑 `inhomo tracker update` 可重拉\n", loadErr)
-		classifier = &tracker.Classifier{}
-	case classifier.Len() == 0:
-		fmt.Fprintln(os.Stderr, "[inhomo] 未加载追踪器数据（跑 `inhomo tracker update` 后可在泄露行标注已知追踪器）")
-	}
+	classifier := loadClassifier()
 
 	// 终端聚合器：按 (节点,host) 时间窗去重，只冒一次不刷屏。
 	agg := aggregate.New(window)

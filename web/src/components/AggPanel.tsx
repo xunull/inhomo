@@ -1,18 +1,9 @@
 import { Card } from 'antd'
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  ResponsiveContainer,
-} from 'recharts'
 import { useNavigate, Link } from 'react-router'
 import { getAggregate, detailPath, withDim, type Dimension, type Filter } from '../api'
 import { useApi } from '../useApi'
-import { truncate } from '../format'
 import AsyncBody from './AsyncBody'
+import HBarChart from './HBarChart'
 
 interface AggPanelProps {
   by: Dimension // 聚合维度
@@ -24,7 +15,7 @@ interface AggPanelProps {
   color?: string
 }
 
-// AggPanel：某一维度的 top-N 条形图。传 by/标题/limit/since，内部 fetch /api/aggregate。
+// AggPanel：某一维度的 top-N 条形图。传 by/标题/limit/since，内部 fetch /api/aggregate。点条形钻取。
 export default function AggPanel({
   by,
   title,
@@ -62,31 +53,12 @@ export default function AggPanel({
             if (raw) navigate(detailPath(withDim(filter, by, raw), since))
           }
           return (
-            <ResponsiveContainer width="100%" height={height}>
-              <BarChart
-                data={rows}
-                layout="vertical"
-                margin={{ left: 8, right: 24, top: 4, bottom: 4 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                <XAxis type="number" allowDecimals={false} />
-                <YAxis
-                  type="category"
-                  dataKey="key"
-                  width={130}
-                  tickFormatter={(v: string) => truncate(v)}
-                />
-                <Tooltip cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
-                <Bar
-                  dataKey="count"
-                  name="连接数"
-                  fill={color}
-                  radius={[0, 4, 4, 0]}
-                  cursor="pointer"
-                  onClick={(_, index) => drill(index)}
-                />
-              </BarChart>
-            </ResponsiveContainer>
+            <HBarChart
+              rows={rows.map((r) => ({ label: r.key, value: r.count }))}
+              color={color}
+              height={height}
+              onBarClick={drill}
+            />
           )
         }}
       </AsyncBody>

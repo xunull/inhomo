@@ -31,6 +31,21 @@ func newTrackerUpdateCmd() *cobra.Command {
 	}
 }
 
+// loadClassifier 从默认缓存加载追踪器归类器，供 audit / serve 共用。集中处理告警（互斥、只一条）：
+// 数据损坏 → 提示重拉并退化为空；缺失/空 → 提示可拉取；正常 → 静默。出错/缺失都返回空归类器（全 unknown、不阻塞）。
+func loadClassifier() *tracker.Classifier {
+	home, _ := os.UserHomeDir() // 取不到 home 时 Load 落到不存在路径 → 空归类器，正是要的降级
+	c, err := tracker.Load(tracker.CachePath(home))
+	switch {
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "[inhomo] 追踪器数据损坏，忽略（%v）；跑 `inhomo tracker update` 可重拉\n", err)
+		return &tracker.Classifier{}
+	case c.Len() == 0:
+		fmt.Fprintln(os.Stderr, "[inhomo] 未加载追踪器数据（跑 `inhomo tracker update` 后可标注/统计已知追踪器）")
+	}
+	return c
+}
+
 func runTrackerUpdate(_ *cobra.Command, _ []string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {

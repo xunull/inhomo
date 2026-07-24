@@ -186,6 +186,27 @@ func (s *Store) Aggregate(by string, f Filter, limit int) ([]AggRow, error) {
 	return out, rows.Err()
 }
 
+// HostCounts 返回过滤切片内**全部**去重 host 及其连接数（无 top-N 截断）。
+// 供追踪器归类用：调用方在 Go 侧按 host 归类再重映射到归属公司（DuckDB 无公共后缀函数，
+// 无法 SQL-side 按 eTLD+1 分组），故需全量而非 Aggregate 的 top-N。
+func (s *Store) HostCounts(f Filter) ([]AggRow, error) {
+	where, args := f.where()
+	rows, err := s.DB().Query(`SELECT CAST(host AS VARCHAR), count(*) FROM connections `+where+` GROUP BY 1`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AggRow{}
+	for rows.Next() {
+		var r AggRow
+		if err := rows.Scan(&r.Key, &r.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // TSPoint 是时间序列的一个点：桶起始时刻 + 该桶内连接数。
 type TSPoint struct {
 	TS    time.Time `json:"ts"`
