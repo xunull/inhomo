@@ -212,6 +212,8 @@ inhomo tracker update    # fetch/update the domain table (~10MB, ~38k known trac
 
 Once fetched, `audit`'s leak lines are annotated with the matched known tracker and its owner. When the data isn't fetched or the network is down, the classifier is empty, leak lines carry no annotation, and nothing errors (graceful degradation). v0 does "known tracker + owner" only; fine-grained categories (advertising/analytics/…) are left for later.
 
+> What the downloaded file is, its format, and how it's used: see [docs/tracker-radar-data.md](./docs/tracker-radar-data.md) (written in Chinese).
+
 ### `inhomo report`
 
 Use an LLM to summarize the connection picture into a natural-language privacy digest. **Only aggregates** (tracker share + owning companies, top egress nodes / regions) are sent to the model — **never raw visited domains** (see ADR-0012). It pulls the aggregates from a **running `serve`**'s `/api` (to avoid the DuckDB single-writer lock), so a `serve` must be running.
