@@ -15,6 +15,9 @@ import {
   FLOW_METRICS,
   flowMetricFromParams,
   isByteMetric,
+  isFilterable,
+  FILTER_DIMS,
+  type AggDimension,
   type ExfilRow,
   coverageOf,
   isWellEvidenced,
@@ -256,5 +259,24 @@ describe('采样覆盖率（外发比结论的证据基础，见 ADR-0013）', (
 
   it('无从判断覆盖率的行按证据不足处理（不给它免检）', () => {
     expect(isWellEvidenced(row(3, 0))).toBe(false)
+  })
+})
+
+describe('isFilterable（可聚合 ≠ 可过滤：杜绝把规则当过滤条件）', () => {
+  // 后端 aggDimensions 白名单比可过滤维度多一个 rule；store.Filter 有意没有 Rule 字段。
+  // 若前端把 rule 当过滤约束发出去，后端会**静默忽略**它——用户看到的是全量数据，
+  // 却以为已经筛过了。这条不变量就是把那种情况挡在类型层面。
+  it('可过滤维度全部为 true，且与 FILTER_DIMS 一一对应', () => {
+    for (const d of FILTER_DIMS) {
+      expect(isFilterable(d.key)).toBe(true)
+    }
+  })
+
+  it('rule 为 false —— 它可聚合但不可过滤', () => {
+    expect(isFilterable('rule')).toBe(false)
+  })
+
+  it('FILTER_DIMS 不含 rule（维度总览页 /d/:dim 据此拒绝 /d/rule）', () => {
+    expect(FILTER_DIMS.some((d) => (d.key as AggDimension) === 'rule')).toBe(false)
   })
 })

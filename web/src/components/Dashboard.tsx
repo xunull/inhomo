@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { Row, Col, Select, Switch, Button, Space, Flex, Typography } from 'antd'
-import { topologyPath, trafficPath, type Dimension, type Filter } from '../api'
+import { topologyPath, trafficPath, isFilterable, type AggDimension, type Filter } from '../api'
 import KpiBar from './KpiBar'
 import AggPanel from './AggPanel'
 import TimeSeriesChart from './TimeSeriesChart'
@@ -10,12 +10,15 @@ import ConnTable from './ConnTable'
 
 const { Text } = Typography
 
-type Panel = { by: Dimension; title: string; color: string }
+type Panel = { by: AggDimension; title: string; color: string }
 
-// 按基数分两组：高基数 host/App 两列宽幅，低基数 node/region/port 三列并排。
+// 按标签长度分两组：长标签（域名 / App / 规则表达式）两列宽幅，短标签 node/region/port 三列并排。
+// 「命中规则」放宽幅这组：规则形如 `DomainKeyword(github)`，挤进三列会被截断得没法看。
 const TALL_PANELS: Panel[] = [
   { by: 'host', title: '热门域名', color: '#1677ff' },
   { by: 'process', title: 'App 画像', color: '#389e0d' },
+  // 规则不是可过滤维度（后端 store.Filter 无 Rule 字段），故此面板不接钻取——AggPanel 按 isFilterable 自行判定。
+  { by: 'rule', title: '命中规则', color: '#08979c' },
 ]
 const SHORT_PANELS: Panel[] = [
   { by: 'node', title: '出境节点', color: '#722ed1' },
@@ -59,8 +62,10 @@ export default function Dashboard({
 
   const bucket = WINDOWS.find((w) => w.value === since)?.bucket ?? '5m'
   // 隐藏被精确过滤钉死的维度面板（只剩一个值的分布没意义）。
-  const visibleTall = TALL_PANELS.filter((p) => filter[p.by] == null)
-  const visibleShort = SHORT_PANELS.filter((p) => filter[p.by] == null)
+  // 不可过滤的维度（规则）永远不会被钉死，故恒显示。
+  const shown = (p: Panel) => !isFilterable(p.by) || filter[p.by] == null
+  const visibleTall = TALL_PANELS.filter(shown)
+  const visibleShort = SHORT_PANELS.filter(shown)
 
   return (
     <>

@@ -19,7 +19,18 @@ export interface AggRow {
 }
 
 // 后端白名单支持的聚合维度。
+// Dimension 是**可过滤**的维度——后端 store.Filter 有对应字段，能当钻取约束用。
 export type Dimension = 'host' | 'process' | 'node' | 'region' | 'port'
+
+// AggDimension 是**可聚合**的维度：可过滤维度 + `rule`。
+// 后端 aggDimensions 白名单比可过滤维度多一个 rule（连接事件有 rule 列，但 store.Filter
+// 有意没有 Rule 字段）。这里分成两个类型，是为了从**类型层面**杜绝「拿规则当过滤条件」——
+// 那样后端会静默忽略该约束，用户却以为已经筛过了，比不做还糟。
+export type AggDimension = Dimension | 'rule'
+
+// isFilterable：该聚合维度能否作为过滤约束——决定面板接不接钻取。
+// 同一判据也用于标题链接（维度总览页 /d/:dim 每行都要钻取，故只收可过滤维度）。
+export const isFilterable = (d: AggDimension): d is Dimension => d !== 'rule'
 
 export interface TSPoint {
   ts: string
@@ -143,7 +154,7 @@ export function withoutKey(f: Filter, key: keyof Filter): Filter {
 // summary 只随过滤切片变、不含 since（KPI 概要口径：该切片的全时段总量，同主面板）。
 export const getSummary = (f: Filter = EMPTY_FILTER) => getJSON<Summary>('/api/summary' + qs(f))
 
-export const getAggregate = (by: Dimension, f: Filter = EMPTY_FILTER, since = '', limit = 20) =>
+export const getAggregate = (by: AggDimension, f: Filter = EMPTY_FILTER, since = '', limit = 20) =>
   getJSON<AggRow[]>('/api/aggregate' + qs(f, { by, since, limit }))
 
 // OwnerCount 是一家追踪器归属公司在切片内的连接数。

@@ -1,12 +1,19 @@
 import { Card } from 'antd'
 import { useNavigate, Link } from 'react-router'
-import { getAggregate, detailPath, withDim, type Dimension, type Filter } from '../api'
+import {
+  getAggregate,
+  detailPath,
+  withDim,
+  isFilterable,
+  type AggDimension,
+  type Filter,
+} from '../api'
 import { useApi } from '../useApi'
 import AsyncBody from './AsyncBody'
 import HBarChart from './HBarChart'
 
 interface AggPanelProps {
-  by: Dimension // 聚合维度
+  by: AggDimension // 聚合维度（不可过滤的维度不接钻取，见下）
   title: string
   filter: Filter // 过滤切片（在此切片内做聚合）
   since: string // 时间窗（'' = 全部）；由顶层全局时间窗驱动
@@ -15,7 +22,10 @@ interface AggPanelProps {
   color?: string
 }
 
-// AggPanel：某一维度的 top-N 条形图。传 by/标题/limit/since，内部 fetch /api/aggregate。点条形钻取。
+// AggPanel：某一维度的 top-N 条形图。传 by/标题/limit/since，内部 fetch /api/aggregate。
+// **可过滤**的维度点条形钻取、标题链到该维度总览页；不可过滤的维度（如「命中规则」，
+// 后端 store.Filter 无对应字段）两者都不接——同 TrackerPanel 的先例。否则点下去会跳到
+// 一个约束被静默忽略的详情页，看起来筛过了、其实是全量。
 export default function AggPanel({
   by,
   title,
@@ -31,13 +41,19 @@ export default function AggPanel({
     [by, filter, since, limit, refreshKey],
   )
 
+  const drillable = isFilterable(by)
+
   return (
     <Card
-      // 面板标题 → 该维度总览页（全量排名）。
+      // 面板标题 → 该维度总览页（全量排名）；不可过滤的维度没有总览页（那页每行都要钻取），故只出纯文字。
       title={
-        <Link to={`/d/${by}?since=${encodeURIComponent(since)}`} style={{ color: 'inherit' }}>
-          {title}
-        </Link>
+        drillable ? (
+          <Link to={`/d/${by}?since=${encodeURIComponent(since)}`} style={{ color: 'inherit' }}>
+            {title}
+          </Link>
+        ) : (
+          title
+        )
       }
       size="small"
       styles={{ body: { padding: 12 } }}
@@ -50,14 +66,14 @@ export default function AggPanel({
           // 点条形 → 在当前切片上叠加该维度取值，跳转过滤详情页；空 key 不可钻取。
           const drill = (index: number) => {
             const raw = rows[index]?.rawKey
-            if (raw) navigate(detailPath(withDim(filter, by, raw), since))
+            if (drillable && raw) navigate(detailPath(withDim(filter, by, raw), since))
           }
           return (
             <HBarChart
               rows={rows.map((r) => ({ label: r.key, value: r.count }))}
               color={color}
               height={height}
-              onBarClick={drill}
+              onBarClick={drillable ? drill : undefined}
             />
           )
         }}
