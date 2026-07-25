@@ -266,6 +266,101 @@ export const getTrafficTotals = (f: Filter = EMPTY_FILTER, since = '') =>
 // trafficPath：流量视图 URL（供 Dashboard 工具栏跳转，带当前切片 + 时间窗；metric 到页内默认 total）。
 export const trafficPath = (f: Filter, since?: string) => pathWith('/traffic', f, since)
 
+// ExfilRow 是一条「应用通道」的外发账（见 CONTEXT「应用通道」/「外发比」/「采样覆盖率」、ADR-0013）。
+// sampled/logged 是覆盖率的原始分子分母（抽样的流量记录 / 全量的连接事件），比值在 UI 侧呈现——
+// 要能说清「20 条里只采到 10 条」，而不是只甩一个 50%。
+export interface ExfilRow {
+  process: string
+  host: string
+  up: number
+  down: number
+  ratio: number
+  sampled: number
+  logged: number
+}
+
+// COVERAGE_MIN 是「证据充分」的采样覆盖率下限。低于它的行照常展示、但标注为证据不足——
+// 门槛（minUp/minSampled，后端默认 5MB / 10 条）挡的是「这行有没有意义」，
+// 覆盖率管的是「这行可不可信」，后者披露而不隐式过滤（ADR-0013）。
+export const COVERAGE_MIN = 0.5
+
+// coverageOf：某通道的采样覆盖率；无连接事件（分母 0）时返回 null = 无从判断。
+export const coverageOf = (r: ExfilRow): number | null => (r.logged > 0 ? r.sampled / r.logged : null)
+
+// isWellEvidenced：该行的字节账是否有足够证据支撑（分母为 0 时视为不足）。
+export const isWellEvidenced = (r: ExfilRow): boolean => {
+  const c = coverageOf(r)
+  return c !== null && c >= COVERAGE_MIN
+}
+
+// getExfil：按外发比降序的应用通道 top-N。无 by/metric 参数——主体与排序是固定的：
+// 外发比不是一种排序方式，是另一种分析（故与 /api/traffic 分开，见 ADR-0013）。
+export const getExfil = (f: Filter = EMPTY_FILTER, since = '', limit = 15) =>
+  getJSON<ExfilRow[]>('/api/exfil' + qs(f, { since, limit }))
+
+// NewChannel 是一条「新增应用通道」（见 CONTEXT 术语）：该 (App, host) 的全库最早连接落在窗口内。
+// proxied/plaintext/tracker 是徽章，只标不滤——实测 24h 内「明文 + 经出境节点」的新增仅 2 条，
+// 拿它当过滤条件会得到一个空页面（ADR-0014）。
+export interface NewChannel {
+  process: string
+  host: string
+  firstTs: string
+  count: number
+  proxied: boolean
+  plaintext: boolean
+  tracker: string // 追踪器归属公司；空 = 未命中或未拉取追踪器数据
+}
+
+// NewAppGroup 是按 App 归组的新增。muted = 「用户指定目的地的进程」（浏览器类），
+// 其新增是用户自己行为的产物，默认折叠——但**保留**，随时可展开。
+export interface NewAppGroup {
+  process: string
+  count: number
+  muted: boolean
+  channels: NewChannel[]
+}
+
+// CoverageGap 是一段没在记录的空洞。
+export interface CoverageGap {
+  start: string
+  end: string
+  hours: number
+}
+
+// Coverage 是「观测覆盖」（见 CONTEXT 术语）：库中确实在记录的时间范围与空洞。
+// 它是新鲜度结论的前提——中断期间出现过的通道，恢复记录后会被误报为「新」。
+export interface Coverage {
+  earliest: string | null
+  latest: string | null
+  coveredHours: number
+  gaps: CoverageGap[]
+}
+
+export interface NewChannelsResp {
+  apps: NewAppGroup[]
+  coverage: Coverage
+  truncated: boolean
+}
+
+// NEW_WINDOWS：新鲜度视图自带的时间窗，**与主页的不同**。
+// 实测新增量：1h→14 条 / 24h→254 / 7d→2745，跨两个数量级，故不跟随主页 1h 档（ADR-0014）。
+export const NEW_WINDOWS: { value: string; label: string }[] = [
+  { value: '24h', label: '近 24 小时' },
+  { value: '7d', label: '近 7 天' },
+  { value: '30d', label: '近 30 天' },
+]
+
+// getNewChannels：不带过滤切片——首次出现要拿窗口外的历史当参照系，不是切片内可算的约束
+// （见 CONTEXT「过滤切片」的边界说明）。
+export const getNewChannels = (since = '24h', limit = 0) =>
+  getJSON<NewChannelsResp>('/api/new' + qs(EMPTY_FILTER, { since, limit: limit || undefined }))
+
+// getNewCount：只取一个数字，供主页 KPI 当 /new 的入口钩子。
+// 主页每 10s 自动刷新，不该为一个数字把整份新增清单（24h 约 250 条）拉过来。
+// 口径与 /new 页面上「未折叠」的部分一致（后端同样排除了 mute 名单）。
+export const getNewCount = (since = '24h') =>
+  getJSON<{ count: number }>('/api/new/count' + qs(EMPTY_FILTER, { since }))
+
 // TIME_WINDOWS：流量 / 拓扑等页面共用的时间窗选项（Dashboard 另有含 bucket 的变体，故不共用那个）。
 export const TIME_WINDOWS: { value: string; label: string }[] = [
   { value: '1h', label: '近 1 小时' },

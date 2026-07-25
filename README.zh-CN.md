@@ -277,13 +277,20 @@ traffic-interval: 3s
 addr: 127.0.0.1:8566
 http-ports: "80"
 window: 5m
+# 「新增」视图里默认折叠的进程（逗号分隔、大小写不敏感的子串匹配）：
+# 目的地由你自己指定的那类进程，它们的新域名是你自己点出来的，不构成「背着我」的证据。
+# 只折叠、不删除——展开随时可看。留空则什么都不折叠。
+mute-processes: "Google Chrome,Safari,Firefox,Microsoft Edge"
 ```
+
+> `mute-processes` 有意只列主流浏览器名。因为是子串匹配，`Google Chrome Helper`（真正发起连接的那个进程）会被正确命中；而各类**非浏览器**的 Helper 进程（小程序容器、AI 客户端、以及名字里带 Browser 的第三方 App）都不含任何浏览器名，**不会**被误伤——它们虽然也由你点开，但目的地是 App 自己定的，正是本视图最该看见的东西。
 
 环境变量 = `INHOMO_` 前缀 + 键名大写、连字符换下划线：
 
 ```bash
 export INHOMO_CONTROLLER=unix:///tmp/verge/verge-mihomo.sock
 export INHOMO_TRAFFIC_INTERVAL=0   # 关闭流量采集
+export INHOMO_MUTE_PROCESSES=""    # 「新增」视图不折叠任何进程
 ```
 
 ## 后台常驻
@@ -324,6 +331,9 @@ secret: ""
 | GET | `/api/aggregate?by=&since=&limit=` | 按维度的 top-N |
 | GET | `/api/timeseries?since=&bucket=` | 按时间桶的连接数 |
 | GET | `/api/trackers?since=&limit=` | 追踪器暴露：多少连接命中已知追踪器 + 归属公司 top-N |
+| GET | `/api/exfil?since=&limit=&minUp=&minSampled=` | 外发比：按「应用通道」(App, host) 的上行/下行比值 top-N，每行随附采样覆盖率 |
+| GET | `/api/new?since=&limit=` | 新增：窗口内首次出现的「应用通道」，按 App 归组 + 观测覆盖 |
+| GET | `/api/new/count?since=` | 新增条数（供主页 KPI 入口；口径同 `/api/new` 里未折叠的部分） |
 
 **时间参数格式**：`since` / `bucket` 支持 Go 时长（`24h`、`90m`）或 `7d`（天）；`since` 留空表示「全部时间」。
 
@@ -344,7 +354,15 @@ curl 'http://127.0.0.1:8566/api/timeseries?since=1h&bucket=5m'
 
 curl 'http://127.0.0.1:8566/api/trackers?since=7d&limit=5'
 # {"total":41,"tracker":12,"owners":[{"owner":"Google","count":8},{"owner":"comScore","count":4}]}
+
+curl 'http://127.0.0.1:8566/api/exfil?since=7d&limit=2'
+# [{"process":"某音乐App","host":"mssdk.example.com","up":13224470,"down":1255406,
+#   "ratio":10.53,"sampled":156,"logged":273}, ...]
 ```
+
+`new` 字段口径：一条「新增应用通道」= 该 `(App, host)` 在**全库历史**中的最早连接恰好落在窗口内——即「这个 App 开始联系一个它以前不联系的地方」。判定用的是全库最早时刻而非窗口内最早时刻，因此它**不接受过滤切片**（切片只会缩小可见范围，套上去会让判定基准漂移）。`coverage` 是「观测覆盖」：库中确实在记录的时间范围与空洞，由「某小时桶零连接」反推——**中断期间出现过的通道，恢复记录后会被误报为新**，所以结论与它的证据基础一并返回。`muted` 标记「用户指定目的地的进程」（默认为主流浏览器，见 `--mute-processes`）：它们的新域名是你自己点出来的，默认折叠但**保留**。`proxied`/`plaintext`/`tracker` 是徽章，只标不滤。
+
+`exfil` 字段口径：`ratio` = `上行 / max(下行, 1)`，排的是**方向性**而非流量大小——所以永远进不了字节 top-N 的埋点/上报类通道会在这里浮出来。`sampled` / `logged` 是采样覆盖率的原始分子分母（抽样的 `traffic` 表行数 / 全量的 `connections` 表行数）：覆盖率低意味着该通道多数连接根本没有字节账，这个比值只是少数长连接的账。门槛 `minUp`（默认 5 MB）与 `minSampled`（默认 10）挡的是小样本噪音；低覆盖率**只披露、不隐式过滤**。
 
 `summary` 字段口径：`proxied` = 经出境节点（`node` 非空、非 `DIRECT`、非 `REJECT*`）；`direct` = 直连；`http`/`https` = 目的端口 80/443 的连接数。
 

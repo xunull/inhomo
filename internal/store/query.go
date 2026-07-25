@@ -561,3 +561,261 @@ func (s *Store) Traffic(by, metric string, f Filter, limit int) (TrafficAgg, err
 	}
 	return ag, rows.Err()
 }
+
+// ExfilRow 是一条「应用通道」的外发账（见 CONTEXT 术语「应用通道」/「外发比」/「采样覆盖率」）。
+// Sampled/Logged 是覆盖率的原始分子分母（分别来自抽样的 traffic 与全量的 connections），
+// 两个原始数都给出而不只给比值——UI 要能说清「87 条里只采到 12 条」，而非一个干巴巴的 14%。
+type ExfilRow struct {
+	Process   string  `json:"process"`
+	Host      string  `json:"host"`
+	UpBytes   int64   `json:"up"`
+	DownBytes int64   `json:"down"`
+	Ratio     float64 `json:"ratio"`   // 外发比 = 上行 / max(下行,1)；与 ORDER BY 同一个表达式算出，不会漂移
+	Sampled   int64   `json:"sampled"` // 该通道在 traffic（抽样）中的行数
+	Logged    int64   `json:"logged"`  // 该通道在 connections（全量）中的行数
+}
+
+// 外发比的默认门槛（见 ADR-0013）：门槛只挡「小样本噪音」，不挡「低覆盖率」——
+// 前者是「这行数字有没有意义」，后者是「这行数字可不可信」，后者该披露而非过滤。
+const (
+	defaultExfilMinUp      = 5 << 20 // 5 MB
+	defaultExfilMinSampled = 10      // 至少 10 条流量记录
+)
+
+// withNonEmptyProcess 往 whereOn 产出的 WHERE 上再挂一个「进程非空」条件。
+// 空进程（mihomo 自身 / 未开 find-process）无法构成「应用通道」——说不出是谁在传，这行就没有意义。
+func withNonEmptyProcess(where string) string {
+	if where == "" {
+		return "WHERE process <> ''"
+	}
+	return where + " AND process <> ''"
+}
+
+// Exfil 在过滤切片内按「应用通道」(process, host) 聚合上/下行字节，按「外发比」降序取 top-N，
+// 并 LEFT JOIN 全量 connections 给出每行的「采样覆盖率」原始分子分母。
+//
+// 与 Traffic 分开而不复用（见 ADR-0013）：行的形状不同（两列主键）、要跨表 JOIN、有自己的门槛参数。
+// limit<=0 默认 20、上限 200；minUp/minSampled <=0 取默认门槛（要放开就显式传 1）。
+// 空结果返回空切片（非 nil），不报错。
+func (s *Store) Exfil(f Filter, limit int, minUp int64, minSampled int) ([]ExfilRow, error) {
+	if limit <= 0 {
+		limit = 20
+	} else if limit > 200 {
+		limit = 200
+	}
+	if minUp <= 0 {
+		minUp = defaultExfilMinUp
+	}
+	if minSampled <= 0 {
+		minSampled = defaultExfilMinSampled
+	}
+	// 同一个切片套两张表：traffic 的时间列是 start_ts、connections 的是 ts。
+	whereT, argsT := f.whereOn("start_ts")
+	whereC, argsC := f.whereOn("ts")
+
+	// 表名/时间列/limit 都是代码内常量或已校验整数，内插安全；过滤值与门槛走参数占位。
+	// 比值在 SQL 里算一次，既用于 ORDER BY 也被 SELECT 出来 —— 排序与展示同源，不会各算各的。
+	q := fmt.Sprintf(`WITH t AS (
+			SELECT process, host, sum(up_bytes) AS up, sum(down_bytes) AS down, count(*) AS sampled
+			FROM traffic %s GROUP BY 1, 2
+		), c AS (
+			SELECT process, host, count(*) AS logged
+			FROM connections %s GROUP BY 1, 2
+		)
+		SELECT t.process, t.host, t.up, t.down,
+			t.up * 1.0 / greatest(t.down, 1) AS ratio,
+			t.sampled, COALESCE(c.logged, 0)
+		FROM t LEFT JOIN c ON c.process = t.process AND c.host = t.host
+		WHERE t.up >= ? AND t.sampled >= ?
+		ORDER BY ratio DESC, t.up DESC, t.process, t.host
+		LIMIT %d`,
+		withNonEmptyProcess(whereT), withNonEmptyProcess(whereC), limit)
+
+	args := make([]any, 0, len(argsT)+len(argsC)+2)
+	args = append(args, argsT...)
+	args = append(args, argsC...)
+	args = append(args, minUp, minSampled)
+
+	rows, err := s.DB().Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []ExfilRow{}
+	for rows.Next() {
+		var r ExfilRow
+		if err := rows.Scan(&r.Process, &r.Host, &r.UpBytes, &r.DownBytes, &r.Ratio, &r.Sampled, &r.Logged); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// NewChannel 是一条「新增应用通道」（见 CONTEXT 术语）：某 (App, host) 在**全库历史**中的
+// 最早连接事件恰好落在当前时间窗内。Proxied/Plaintext 是给 UI 打徽章用的风险标记——
+// 只标不滤（实测 24h 内同时明文+经出境节点的新增仅 2 条，做成过滤条件会得到空页面，见 ADR-0014）。
+type NewChannel struct {
+	Process   string    `json:"process"`
+	Host      string    `json:"host"`
+	FirstTS   time.Time `json:"firstTs"`
+	Count     int64     `json:"count"`     // 窗口内该通道的连接数
+	Proxied   bool      `json:"proxied"`   // 有任一连接经出境节点
+	Plaintext bool      `json:"plaintext"` // 有任一连接目的端口为 80
+}
+
+// 新增通道结果集的规模上限。导出是为了让调用方能用同一函数算出「生效上限」，
+// 从而判断结果是否被截断并如实告知——静默截断会让用户把「只列了这些」读成「只有这些」。
+const (
+	DefaultNewChannelsLimit = 2000
+	MaxNewChannelsLimit     = 10000
+)
+
+// EffectiveNewChannelsLimit 把请求的 limit 归一到实际生效值（<=0 取默认、超上限钳到上限）。
+func EffectiveNewChannelsLimit(limit int) int {
+	if limit <= 0 {
+		return DefaultNewChannelsLimit
+	}
+	if limit > MaxNewChannelsLimit {
+		return MaxNewChannelsLimit
+	}
+	return limit
+}
+
+// NewChannels 返回「首次出现落在最近 since 内」的应用通道，按 (App, 首次时刻倒序) 排列。
+//
+// 不接受 Filter（见 CONTEXT「过滤切片」的边界说明）：首次出现要拿**窗口外的历史**当参照，
+// 而切片只会缩小可见范围——若把 region=JP 之类的约束套进来，min(ts) 会漂移成
+// 「在 JP 首次出现的时刻」，语义就变了。故这里只收时间窗。
+//
+// since<=0 默认 24h；limit 按 EffectiveNewChannelsLimit 归一（调用方用同一函数算出生效上限，
+// 再据 len(rows) >= 上限 判断结果是否被截断——不静默截断）。
+func (s *Store) NewChannels(since time.Duration, limit int) ([]NewChannel, error) {
+	if since <= 0 {
+		since = 24 * time.Hour
+	}
+	limit = EffectiveNewChannelsLimit(limit)
+	cutoff := time.Now().Add(-since)
+
+	// firsts 取全库最早时刻（无时间条件——这正是「新」的参照系）；外层再筛出落在窗口内的。
+	// JOIN 无需再限 c.ts >= cutoff：first_ts >= cutoff 已蕴含该通道的每条连接都在窗口内。
+	q := fmt.Sprintf(`WITH firsts AS (
+			SELECT process, host, min(ts) AS first_ts
+			FROM connections WHERE process <> '' GROUP BY 1, 2
+		)
+		SELECT f.process, f.host, f.first_ts, count(*),
+			count(*) FILTER (WHERE %s) > 0,
+			count(*) FILTER (WHERE c.port = 80) > 0
+		FROM firsts f
+		JOIN connections c ON c.process = f.process AND c.host = f.host
+		WHERE f.first_ts >= ?
+		GROUP BY 1, 2, 3
+		ORDER BY f.process, f.first_ts DESC, f.host
+		LIMIT %d`, sqlProxied, limit)
+
+	rows, err := s.DB().Query(q, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []NewChannel{}
+	for rows.Next() {
+		var c NewChannel
+		if err := rows.Scan(&c.Process, &c.Host, &c.FirstTS, &c.Count, &c.Proxied, &c.Plaintext); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// CoverageGap 是一段「没在记录」的空洞：从 Start 那个小时之后到 End 那个小时之前。
+type CoverageGap struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+	Hours int64     `json:"hours"`
+}
+
+// Coverage 是「观测覆盖」（见 CONTEXT 术语）：库中确实处于记录状态的时间范围与其空洞。
+type Coverage struct {
+	Earliest     *time.Time    `json:"earliest"`
+	Latest       *time.Time    `json:"latest"`
+	CoveredHours int64         `json:"coveredHours"` // 有连接事件的小时桶数
+	Gaps         []CoverageGap `json:"gaps"`
+}
+
+// coverageGapHours 是判定空洞的阈值：相邻两个「有数据的小时」相距超过它即视为中断。
+// 取 1 小时的依据是实测——有数据的小时里最少的一个也有 245 条连接、中位数 2765，
+// 故「整整一小时零连接」几乎必然是没在记录，而非那小时没上网（见 ADR-0014）。
+const coverageGapHours = 1
+
+// Coverage 从连接密度反推观测覆盖，不依赖任何独立的心跳记录（见 ADR-0014）。
+// 空库返回零值（时间为 nil、无空洞），不报错。
+func (s *Store) Coverage() (Coverage, error) {
+	var cov Coverage
+	var earliest, latest sql.NullTime
+	if err := s.DB().QueryRow(
+		`SELECT min(ts), max(ts), count(DISTINCT date_trunc('hour', ts)) FROM connections`,
+	).Scan(&earliest, &latest, &cov.CoveredHours); err != nil {
+		return Coverage{}, err
+	}
+	if earliest.Valid {
+		cov.Earliest = &earliest.Time
+	}
+	if latest.Valid {
+		cov.Latest = &latest.Time
+	}
+
+	cov.Gaps = []CoverageGap{}
+	q := fmt.Sprintf(`WITH b AS (
+			SELECT date_trunc('hour', ts) AS h FROM connections GROUP BY 1
+		), o AS (
+			SELECT h, lag(h) OVER (ORDER BY h) AS prev FROM b
+		)
+		SELECT prev, h, date_diff('hour', prev, h)
+		FROM o WHERE prev IS NOT NULL AND date_diff('hour', prev, h) > %d
+		ORDER BY prev`, coverageGapHours)
+	rows, err := s.DB().Query(q)
+	if err != nil {
+		return Coverage{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var g CoverageGap
+		if err := rows.Scan(&g.Start, &g.End, &g.Hours); err != nil {
+			return Coverage{}, err
+		}
+		cov.Gaps = append(cov.Gaps, g)
+	}
+	return cov, rows.Err()
+}
+
+// CountNewChannels 只数「首次出现落在窗口内」的应用通道数量，供主页 KPI 当钩子用——
+// 主页每 10 秒自动刷新，不该为了一个数字把整份新增清单拉过来。
+//
+// excludeProcesses 用大小写不敏感的**子串**排除（口径与 serve 层的 isMutedProcess 一致），
+// 好让这个数字与 /new 页面上「未折叠」的那部分对得上——否则主页说 500、页面上只看到 254，
+// 用户会以为少了一半。排除发生在分组前，但 process 是分组键，故不影响其它进程的 min(ts)。
+func (s *Store) CountNewChannels(since time.Duration, excludeProcesses []string) (int64, error) {
+	if since <= 0 {
+		since = 24 * time.Hour
+	}
+	conds := []string{"process <> ''"}
+	args := make([]any, 0, len(excludeProcesses)+1)
+	for _, p := range excludeProcesses {
+		conds = append(conds, "process NOT ILIKE ?")
+		args = append(args, "%"+p+"%")
+	}
+	args = append(args, time.Now().Add(-since))
+
+	q := `WITH firsts AS (
+			SELECT process, host, min(ts) AS first_ts
+			FROM connections WHERE ` + strings.Join(conds, " AND ") + ` GROUP BY 1, 2
+		)
+		SELECT count(*) FROM firsts WHERE first_ts >= ?`
+	var n int64
+	err := s.DB().QueryRow(q, args...).Scan(&n)
+	return n, err
+}

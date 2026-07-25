@@ -13,6 +13,7 @@ import { useApi } from '../useApi'
 import { fmtBytes } from '../format'
 import AsyncBody from './AsyncBody'
 import TrafficPanel from './TrafficPanel'
+import ExfilPanel from './ExfilPanel'
 
 const { Text } = Typography
 
@@ -87,6 +88,12 @@ export default function TrafficPage() {
           )}
         </AsyncBody>
       </Card>
+
+      {/* 外发比：按「应用通道」找谁在往外送数据。放在按维度的字节 top-N 之上——
+          它回答的问题（方向性）比「谁最耗带宽」更接近本项目的隐私视角，且不受 metric 控件影响。 */}
+      <div style={{ marginBottom: 16 }}>
+        <ExfilPanel filter={filter} since={since} refreshKey={refreshKey} />
+      </div>
 
       <Row gutter={[16, 16]}>
         {/* 隐藏被精确过滤钉死的维度面板（只剩一个值的 top-N 没意义）。 */}

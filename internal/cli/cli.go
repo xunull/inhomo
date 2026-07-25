@@ -20,6 +20,7 @@ const (
 	flagDB         = "db"
 	flagAddr       = "addr"
 	flagTrafficInt = "traffic-interval"
+	flagMuteProcs  = "mute-processes"
 )
 
 func newRootCmd(version string) *cobra.Command {
