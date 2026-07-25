@@ -1,267 +1,271 @@
 # inhomo
 
-**审计经由 mihomo 出站的明文 HTTP 泄露，并把全量连接事件落进嵌入式 DuckDB，配一个内嵌的 React 仪表盘做分析。**
+**English** · [简体中文](./README.zh-CN.md)
 
-inhomo 订阅 [mihomo](https://github.com/MetaCubeX/mihomo)（Clash Meta 内核）的 `/logs` 流，逐条解析连接日志，做两件事：
+**Audit plaintext-HTTP leaks through mihomo egress proxy nodes, record every connection event into an embedded DuckDB, and analyze it in a built-in React dashboard.**
 
-1. **审计明文 HTTP 泄露** —— 找出以明文 HTTP（默认目的端口 `80`）形式、且经由**境外/不可信代理节点**中转的访问。这类流量的内容对中转节点是可见的，是隐私泄露面。
-2. **全量连接分析** —— 把每一条连接事件（不止泄露）写入嵌入式 DuckDB，通过一个同进程的 Web 服务 + React 仪表盘做聚合分析（热门域名、App 画像、出境节点占比、地区分布、时间曲线……）。
+inhomo subscribes to the `/logs` stream of [mihomo](https://github.com/MetaCubeX/mihomo) (the Clash Meta core), parses each connection log line, and does two things:
 
-整个程序是**单二进制**：CLI、Web 服务、DuckDB、前端仪表盘全部打包在一个可执行文件里，本机运行、数据不出机。
+1. **Audit plaintext-HTTP leaks** — surface traffic that goes out as plaintext HTTP (destination port `80` by default) *and* is relayed through a **foreign / untrusted proxy node**. Such content is readable by the relaying node — a real privacy-exposure surface.
+2. **Full connection analytics** — write every connection event (not just leaks) into an embedded DuckDB, and analyze it via an in-process web server + React dashboard (top domains, per-app profile, egress-node share, region distribution, time series, …).
 
----
-
-## 目录
-
-- [它解决什么问题](#它解决什么问题)
-- [工作原理](#工作原理)
-- [环境要求](#环境要求)
-- [通过 Homebrew 安装](#通过-homebrew-安装)
-- [从源码安装与构建](#从源码安装与构建)
-- [快速开始](#快速开始)
-- [命令参考](#命令参考)
-- [本机 mihomo 自动发现](#本机-mihomo-自动发现)
-- [配置](#配置)
-- [后台常驻](#后台常驻)
-- [Web 分析接口](#web-分析接口)
-- [数据模型](#数据模型)
-- [连接到 mihomo](#连接到-mihomo)
-- [核心概念](#核心概念)
-- [设计决策](#设计决策)
-- [项目结构](#项目结构)
-- [隐私与并发约束](#隐私与并发约束)
-- [开发](#开发)
+The whole program is a **single binary**: CLI, web server, DuckDB, and the frontend dashboard are all bundled into one executable that runs locally — your data stays on the machine.
 
 ---
 
-## 它解决什么问题
+## Table of contents
 
-在 TUN（虚拟网卡）模式下，本机所有流量都经 mihomo 出站。其中一部分是**明文 HTTP**：URL、Host、甚至 body 都没有 TLS 保护。如果这样一条连接又被分流到了**境外代理节点**，那么内容对该节点运营者就是可读的——这是一条真实的隐私泄露路径，且平时完全无感。
+- [What it solves](#what-it-solves)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Install via Homebrew](#install-via-homebrew)
+- [Build from source](#build-from-source)
+- [Quick start](#quick-start)
+- [Command reference](#command-reference)
+- [Local mihomo auto-discovery](#local-mihomo-auto-discovery)
+- [Configuration](#configuration)
+- [Run as a background service](#run-as-a-background-service)
+- [Web analytics API](#web-analytics-api)
+- [Data model](#data-model)
+- [Connecting to mihomo](#connecting-to-mihomo)
+- [Core concepts](#core-concepts)
+- [Design decisions](#design-decisions)
+- [Project layout](#project-layout)
+- [Privacy and concurrency](#privacy-and-concurrency)
+- [Development](#development)
 
-inhomo 把这条路径显式地监控起来：告警条件不是「任意 HTTP」也不是「任意代理连接」，而是二者的交集——**明文 HTTP 连接 且 经过了出境节点**（`chains` 非 `DIRECT`/`REJECT`）。同时它顺手把全量连接留档，让你能回看「哪些 App、访问了哪些域名、走了哪些节点、去了哪些地区」。
+---
 
-## 工作原理
+## What it solves
 
-mihomo 的 `/logs` 是一个**纯 HTTP GET 流**（逐行 newline 分隔的 JSON，无需 WebSocket）。每条 `[TCP]` 日志由 mihomo 在**连接建立那一刻只打一行**，因此 inhomo 的观测最小单位是「一条 TCP 连接」，既不是单个 HTTP 请求，也不是数据包。
+In TUN mode, all local traffic exits through mihomo. Some of it is **plaintext HTTP**: the URL, Host, even the body carry no TLS protection. If such a connection is also routed through a **foreign proxy node**, its content is readable by that node's operator — a real, and normally invisible, privacy-leak path.
+
+inhomo makes that path explicit. The alert condition is neither "any HTTP" nor "any proxied connection," but their intersection — **a plaintext-HTTP connection that went through an egress node** (`chains` is not `DIRECT`/`REJECT`). Along the way it archives every connection so you can review "which apps visited which domains, through which nodes, to which regions."
+
+## How it works
+
+mihomo's `/logs` is a **plain HTTP GET stream** (newline-delimited JSON, no WebSocket needed). Each `[TCP]` log line is printed by mihomo **once, at the moment the connection is established**, so inhomo's smallest unit of observation is "one TCP connection" — not an individual HTTP request, not a packet.
 
 ```
-mihomo  ──GET /logs?level=info（逐行 JSON 流）──►  inhomo
+mihomo  ──GET /logs?level=info (newline-delimited JSON stream)──►  inhomo
                                                     │
-                                        detect.Parse（解析每条 [TCP] 连接日志）
+                                        detect.Parse (parse each [TCP] connection log)
                                                     │
                         ┌───────────────────────────┼───────────────────────────┐
                         ▼                            ▼                            ▼
-                  audit：明文HTTP           record：全量连接事件          logs：原样逐行
-                  + 出境节点 → 告警           → 嵌入式 DuckDB              打印 mihomo 日志
-                  （终端 / JSONL）                   │
+                  audit: plaintext HTTP      record: all connection       logs: print mihomo
+                  + egress node → alert       events → embedded DuckDB     log lines verbatim
+                  (terminal / JSONL)                 │
                                                     ▼
-                                          serve：同进程 Web 服务
-                                          ├─ React 仪表盘（/）
-                                          └─ 分析接口（/api/*）
+                                          serve: in-process web server
+                                          ├─ React dashboard (/)
+                                          └─ analytics API (/api/*)
 ```
 
-一条连接日志形如：
+Two auxiliary commands center on **tracker identification**: `tracker` fetches a local tracker database that lets `audit` and the dashboard label destination domains as "known tracker + owning company"; `report` queries a running `serve`'s `/api` and uses an LLM to write a natural-language privacy digest (aggregates only, never raw domains).
+
+A connection log line looks like:
 
 ```
 [TCP] 192.168.1.2:54321(curl) --> example.com:80 [match RuleSet | GEOIP] using 🚀 节点选择[🇺🇸美国HY2-06|1.0X]
 ```
 
-inhomo 从中解析出：进程（`curl`）、目的 host/端口（`example.com:80`）、命中规则、出境节点（取 `chains` 里最后一个真实节点）、以及从节点名推断的地区（`🇺🇸` → `US`）。
+From it inhomo parses: the process (`curl`), destination host/port (`example.com:80`), the matched rule, the egress node (the last real node in `chains`), and the region inferred from the node name (`🇺🇸` → `US`).
 
-## 环境要求
+## Requirements
 
 - **Go 1.26+**
-- **C 编译器 + CGO** —— DuckDB 通过 [go-duckdb](https://github.com/marcboeker/go-duckdb) 以 CGO 方式嵌入，构建 `record`/`serve` 需要 `CGO_ENABLED=1`（macOS 自带 clang，Linux 需 gcc/clang）。
-- **Node.js**（仅当你要**重新构建前端**时需要）—— 前端 `web/dist` 已提交进库，裸 `go build` 无需 Node 即可内嵌它。
-- **一个在运行的 mihomo**，且开启了 `external-controller`（TCP 端口或 Unix socket）。
+- **A C compiler + CGO** — DuckDB is embedded via [go-duckdb](https://github.com/marcboeker/go-duckdb) using CGO, so building `record`/`serve` needs `CGO_ENABLED=1` (macOS ships clang; Linux needs gcc/clang).
+- **Node.js** (only if you want to **rebuild the frontend**) — the built frontend `web/dist` is committed, so a bare `go build` embeds it without Node.
+- **A running mihomo** with `external-controller` enabled (TCP port or Unix socket).
 
-## 通过 Homebrew 安装
+## Install via Homebrew
 
-预编译二进制（macOS / Linux，各 arm64 + amd64）经 Homebrew tap 分发，装完即用、无需 Go 工具链：
+Prebuilt binaries (macOS / Linux, each arm64 + amd64) are distributed through a Homebrew tap — no Go toolchain required:
 
 ```bash
-brew tap xunull/tap        # tap 仓库：github.com/xunull/homebrew-tap
-brew trust xunull/tap      # Homebrew 6.x 起：信任第三方 tap，不加这步 install 会被拒
-brew install inhomo        # 或一步到位：brew install xunull/tap/inhomo
+brew tap xunull/tap        # tap repo: github.com/xunull/homebrew-tap
+brew trust xunull/tap      # Homebrew 6.x+: trust the third-party tap, or install is refused
+brew install inhomo        # or in one shot: brew install xunull/tap/inhomo
 ```
 
-> **`brew trust` 是必需的一步**：Homebrew 6.x 起对第三方 tap 加了信任门，未 `brew trust` 就 `brew install` 会报 `Refusing to load formula ... from untrusted tap`。这是 Homebrew 的安全机制，非本项目所能免除；`brew trust xunull/tap`（或 `brew trust --formula xunull/tap/inhomo` 只信任单个 formula）后即可正常安装。
+> **`brew trust` is a required step**: since Homebrew 6.x, third-party taps sit behind a trust gate; running `brew install` without `brew trust` fails with `Refusing to load formula ... from untrusted tap`. This is Homebrew's own security mechanism, not something this project can waive. After `brew trust xunull/tap` (or `brew trust --formula xunull/tap/inhomo` to trust just this one formula) install works normally.
 
-升级 `brew upgrade inhomo`，卸载 `brew uninstall inhomo`。装完仍需一个在运行的 mihomo（见下）。
+Upgrade with `brew upgrade inhomo`, remove with `brew uninstall inhomo`. You still need a running mihomo (see below).
 
-> **关于「未签名」**：二进制未做 Apple 公证，但**经 Homebrew 安装无需手动放行**——Homebrew 用自带 curl 下载，不会给文件打 `com.apple.quarantine` 隔离标记（那是浏览器下载才加的），所以装完可直接运行。仅当你绕过 brew、用浏览器直接下 Release 里的 `tar.gz` 时，才需 `xattr -d com.apple.quarantine ./inhomo` 放行。
+> **On "unsigned"**: the binaries are not Apple-notarized, but **installing via Homebrew needs no manual approval** — Homebrew downloads with its own curl and does not stamp the `com.apple.quarantine` attribute (that comes from browser downloads), so it runs right after install. Only if you bypass brew and download the Release `tar.gz` in a browser do you need `xattr -d com.apple.quarantine ./inhomo` to clear it.
 
-## 从源码安装与构建
+## Build from source
 
-需 Go + CGO（见上「[环境要求](#环境要求)」）；改代码或无 Homebrew 时用这条路径。
+Needs Go + CGO (see [Requirements](#requirements) above); use this path when hacking on the code or when Homebrew isn't available.
 
 ```bash
-# 克隆后，一条命令构建前端 + 内嵌 + go build，产出单二进制 ./inhomo
+# After cloning, one command builds the frontend + embeds it + go build, producing the single binary ./inhomo
 make
 
-# 若要改前端，先装依赖，再单独构建前端
-make deps        # npm install（首次或 package.json 变更后）
-make frontend    # 构建 web/dist（go:embed 需要它）
+# To change the frontend, install deps first, then build it separately
+make deps        # npm install (first time, or after package.json changes)
+make frontend    # build web/dist (needed by go:embed)
 
-# 只构建 Go（用已提交的 web/dist，无需 Node）
-make build       # 等价于 CGO_ENABLED=1 go build -o inhomo .
+# Build Go only (uses the committed web/dist, no Node needed)
+make build       # equivalent to CGO_ENABLED=1 go build -o inhomo .
 
-# 全套 Go 测试
+# Full Go test suite
 make test
 ```
 
-## 快速开始
+## Quick start
 
-> 用 **Clash Verge Rev**？可省略 `--controller` / `--secret`——inhomo 会[自动发现本机 mihomo](#本机-mihomo-自动发现)并连上。下面为通用写法，显式给出参数。
+> Using **Clash Verge Rev**? You can omit `--controller` / `--secret` — inhomo will [auto-discover your local mihomo](#local-mihomo-auto-discovery) and connect. The commands below spell the arguments out for generality.
 
-三步看到仪表盘（假设你的 mihomo controller 在默认的 `127.0.0.1:9090`）：
+Three steps to the dashboard (assuming your mihomo controller is at the default `127.0.0.1:9090`):
 
 ```bash
-# 1) 构建
+# 1) build
 make
 
-# 2) 一边记录连接、一边开 Web 服务（默认库 ~/.inhomo/connections.duckdb）
-./inhomo serve --controller 127.0.0.1:9090 --secret <你的secret>
+# 2) record connections and serve the web UI at once (default DB ~/.inhomo/connections.duckdb)
+./inhomo serve --controller 127.0.0.1:9090 --secret <your-secret>
 
-# 3) 浏览器打开
+# 3) open in a browser
 open http://127.0.0.1:8566/
 ```
 
-产生一些流量（正常上网即可），仪表盘上就会出现 KPI、Top 域名/节点、时间曲线。
+Generate some traffic (just browse normally) and the dashboard fills up with KPIs, top domains/nodes, and the time-series chart.
 
-只想快速验证连通、看看 mihomo 在打什么日志：
-
-```bash
-./inhomo logs --controller 127.0.0.1:9090 --secret <你的secret>
-```
-
-只想审计明文 HTTP 泄露（不落库、只在终端冒泄露事件）：
+Just want to check connectivity and see what mihomo is logging:
 
 ```bash
-./inhomo audit --controller 127.0.0.1:9090 --secret <你的secret>
+./inhomo logs --controller 127.0.0.1:9090 --secret <your-secret>
 ```
 
-## 命令参考
+Just want to audit plaintext-HTTP leaks (no DB, leaks printed to the terminal):
 
-所有命令共享两个 root 持久 flag：
+```bash
+./inhomo audit --controller 127.0.0.1:9090 --secret <your-secret>
+```
 
-| Flag | 默认 | 说明 |
+## Command reference
+
+All commands share two root persistent flags:
+
+| Flag | Default | Description |
 |---|---|---|
-| `--controller` | `127.0.0.1:9090` | mihomo external-controller。TCP 如 `127.0.0.1:9090`，或 Unix socket 如 `unix:///tmp/verge/verge-mihomo.sock`。**不指定则[自动发现本机 mihomo](#本机-mihomo-自动发现)**，发现不到才回退 `127.0.0.1:9090` |
-| `--secret` | `""` | external-controller 的 secret（未开启鉴权则留空） |
+| `--controller` | `127.0.0.1:9090` | mihomo external-controller. TCP like `127.0.0.1:9090`, or a Unix socket like `unix:///tmp/verge/verge-mihomo.sock`. **If omitted, it [auto-discovers your local mihomo](#local-mihomo-auto-discovery)** and only falls back to `127.0.0.1:9090` when nothing is found. |
+| `--secret` | `""` | The external-controller secret (leave empty if auth is off). |
 
 ### `inhomo audit`
 
-识别并记录「明文 HTTP + 经出境节点」的泄露事件。终端按 `(出境节点, 目的host)` 时间窗去重、不刷屏；可选把每一条原始事件追加写 JSONL。
+Identify and record "plaintext HTTP + through an egress node" leak events. The terminal de-duplicates by `(egress node, destination host)` within a time window so it doesn't flood; optionally append every raw event to a JSONL file.
 
-| Flag | 默认 | 说明 |
+| Flag | Default | Description |
 |---|---|---|
-| `--level` | `info` | 订阅的日志级别；连接日志需要 `info` |
-| `--http-ports` | `80` | 视为明文 HTTP 的目的端口集（逗号分隔，如 `80,8080`） |
-| `--out` | `""` | JSONL 输出文件路径（留空=只打印终端、不落盘） |
-| `--window` | `5m` | 终端聚合时间窗：同 `(节点,host)` 在窗内只冒一次 |
+| `--level` | `info` | Log level to subscribe to; connection logs need `info`. |
+| `--http-ports` | `80` | Destination ports treated as plaintext HTTP (comma-separated, e.g. `80,8080`). |
+| `--out` | `""` | JSONL output file path (empty = terminal only, no file). |
+| `--window` | `5m` | Terminal aggregation window: the same `(node, host)` surfaces only once per window. |
 
-终端输出示例：
+Example terminal output:
 
 ```
 15:04:05  明文HTTP泄露  example.com:80  →  🇺🇸美国HY2-06|1.0X [US]  规则:GEOIP  (过去 5m0s 内又 ×3)
 ```
 
-先跑一次 [`inhomo tracker update`](#inhomo-tracker) 后，命中已知追踪器的泄露行会额外标注归属公司，例如 `… 规则:GEOIP  [已知追踪器 · Google]`。未拉取数据则只提示一次、照常审计（不报错）。
+After running [`inhomo tracker update`](#inhomo-tracker) once, leak lines that hit a known tracker are additionally annotated with the owning company, e.g. `… 规则:GEOIP  [已知追踪器 · Google]`. Without the data it prints a one-time hint and audits as usual (no error).
 
 ### `inhomo logs`
 
-原样查看 mihomo 日志（逐行 payload + 级别标记），用于排查连通性或直接观察内核在打什么。
+View mihomo logs verbatim (line-by-line payload + a level tag), for checking connectivity or watching what the core is emitting.
 
-| Flag | 默认 | 说明 |
+| Flag | Default | Description |
 |---|---|---|
-| `--level` | `info` | 订阅的日志级别：`info` / `warning` / `error` / `debug` |
+| `--level` | `info` | Log level to subscribe to: `info` / `warning` / `error` / `debug`. |
 
 ### `inhomo record`
 
-把每条连接事件（**全量，不止泄露**）写入嵌入式 DuckDB，供后续分析统计。
+Write every connection event (**all of them, not just leaks**) into the embedded DuckDB for later analysis.
 
-| Flag | 默认 | 说明 |
+| Flag | Default | Description |
 |---|---|---|
-| `--level` | `info` | 订阅的日志级别；连接日志需要 `info` |
-| `--db` | `~/.inhomo/connections.duckdb` | DuckDB 库文件路径。空=默认路径；`~/` 前缀会展开到 home，目录不存在自动创建 |
+| `--level` | `info` | Log level to subscribe to; connection logs need `info`. |
+| `--db` | `~/.inhomo/connections.duckdb` | DuckDB file path. Empty = default path; a `~/` prefix expands to home; missing directories are created. |
 
 ### `inhomo serve`
 
-`record` 的超集：同进程一边记录连接、一边开 Web 服务，托管 React 仪表盘与分析接口。
+A superset of `record`: record connections and serve the web UI in the same process, hosting the React dashboard and the analytics API.
 
-| Flag | 默认 | 说明 |
+| Flag | Default | Description |
 |---|---|---|
-| `--level` | `info` | 同 `record` |
-| `--db` | `~/.inhomo/connections.duckdb` | 同 `record` |
-| `--addr` | `127.0.0.1:8566` | Web 监听地址（默认仅本机、无鉴权；填非回环地址会打印警告） |
+| `--level` | `info` | Same as `record`. |
+| `--db` | `~/.inhomo/connections.duckdb` | Same as `record`. |
+| `--addr` | `127.0.0.1:8566` | Web listen address (loopback-only and unauthenticated by default; a non-loopback address prints a warning). |
 
-> 记录后台跑；一旦记录侧断开（如 `/logs` 连接失败），会连带关闭 Web，避免「记录已死、Web 空转」。
+> Recording runs in the background; if the recording side stops (e.g. the `/logs` connection fails) the web server is shut down with it, so you never have "recording dead, web idling."
 
 ### `inhomo tracker`
 
-管理追踪器识别数据（DuckDuckGo Tracker Radar 的「域名 → 归属公司」表）。数据是 CC BY-NC-SA 4.0、不随二进制分发，改由本命令**运行期拉取**到 `~/.inhomo/tracker-radar.json`，之后**离线**比对（见 ADR-0011）。
+Manage the tracker-identification data (DuckDuckGo Tracker Radar's "domain → owning company" table). The data is CC BY-NC-SA 4.0 and is **not** shipped inside the binary; this command **fetches it at runtime** to `~/.inhomo/tracker-radar.json`, and matching is done **offline** afterward (see ADR-0011).
 
 ```bash
-inhomo tracker update    # 拉取/更新域名表（约 10MB，~3.8 万条已知追踪器域名）
+inhomo tracker update    # fetch/update the domain table (~10MB, ~38k known tracker domains)
 ```
 
-拉取后，`audit` 的泄露行会标注命中的已知追踪器及归属公司。未拉取或断网时归类器为空，泄露行不标注、不报错（优雅退化）。v0 只做「已知追踪器 + 归属」，细粒度类别（广告/分析/…）留作后续。
+Once fetched, `audit`'s leak lines are annotated with the matched known tracker and its owner. When the data isn't fetched or the network is down, the classifier is empty, leak lines carry no annotation, and nothing errors (graceful degradation). v0 does "known tracker + owner" only; fine-grained categories (advertising/analytics/…) are left for later.
 
 ### `inhomo report`
 
-用 AI 把连接态势总结成自然语言隐私周报。**只把聚合**（追踪器占比 + 归属公司、出境节点 / 地区 top）喂给模型，**绝不发原始访问域名**（见 ADR-0012）。从**运行中的 `serve`** 的 `/api` 取聚合（避开 DuckDB 单写锁），故需先有一个 `serve` 在跑。
+Use an LLM to summarize the connection picture into a natural-language privacy digest. **Only aggregates** (tracker share + owning companies, top egress nodes / regions) are sent to the model — **never raw visited domains** (see ADR-0012). It pulls the aggregates from a **running `serve`**'s `/api` (to avoid the DuckDB single-writer lock), so a `serve` must be running.
 
 ```bash
-export INHOMO_AI_API_KEY=sk-...            # 或写进 ~/.inhomo/config.yaml 的 ai-api-key（勿在命令行明文传）
-inhomo report --since 7d                   # 默认 Anthropic、模型 claude-sonnet-5、查 127.0.0.1:8566 的 serve
+export INHOMO_AI_API_KEY=sk-...            # or put ai-api-key in ~/.inhomo/config.yaml (avoid passing it on the command line)
+inhomo report --since 7d                   # defaults: Anthropic, model claude-sonnet-5, querying the serve at 127.0.0.1:8566
 
-# 用 DeepSeek 等 OpenAI 兼容平台：选 openai provider + 给它的基址/模型（DeepSeek 不是 Anthropic 兼容）
+# Use DeepSeek or another OpenAI-compatible platform: pick the openai provider + its base URL/model (DeepSeek is NOT Anthropic-compatible)
 inhomo report --ai-provider openai --ai-base-url https://api.deepseek.com --ai-model deepseek-chat --since 7d
 ```
 
-| Flag | 默认 | 说明 |
+| Flag | Default | Description |
 |---|---|---|
-| `--addr` | `127.0.0.1:8566` | 要查询的运行中 serve 地址（从它的 `/api` 取聚合） |
-| `--since` | `7d` | 统计时间窗（如 `7d` / `24h`） |
-| `--out` | `""` | 把报告写入该文件（留空则打印到终端） |
-| `--ai-provider` | `anthropic` | `anthropic` 或 `openai`（`openai` 覆盖 DeepSeek / OpenAI / Groq / 本地 Ollama 等） |
-| `--ai-model` | `claude-sonnet-5` | 生成用的模型（换 provider 时也要换，如 DeepSeek 用 `deepseek-chat`） |
-| `--ai-api-key` | `""` | API key（建议用 `INHOMO_AI_API_KEY` 环境变量或配置文件） |
-| `--ai-base-url` | `""` | API 基址（默认各 provider 官方；DeepSeek 用 `https://api.deepseek.com`） |
+| `--addr` | `127.0.0.1:8566` | Address of the running serve to query (aggregates come from its `/api`). |
+| `--since` | `7d` | Time window (e.g. `7d` / `24h`). |
+| `--out` | `""` | Write the report to this file (empty = print to terminal). |
+| `--ai-provider` | `anthropic` | `anthropic` or `openai` (`openai` covers DeepSeek / OpenAI / Groq / local Ollama, …). |
+| `--ai-model` | `claude-sonnet-5` | Model to generate with (change it when you change providers, e.g. `deepseek-chat` for DeepSeek). |
+| `--ai-api-key` | `""` | API key (prefer the `INHOMO_AI_API_KEY` env var or the config file). |
+| `--ai-base-url` | `""` | API base URL (defaults to each provider's official one; DeepSeek uses `https://api.deepseek.com`). |
 
-## 本机 mihomo 自动发现
+## Local mihomo auto-discovery
 
-**零参数即用**：不带 `--controller`（也没设 `INHOMO_CONTROLLER` 环境变量、`~/.inhomo/config.yaml` 里也没写 `controller`）时，`serve` / `record` / `audit` / `logs` 会自动发现本机 mihomo 并连上，无需再手敲 `--controller unix://… --secret …`。
+**Zero-argument by default**: with no `--controller` (and no `INHOMO_CONTROLLER` env var, and no `controller` key in `~/.inhomo/config.yaml`), `serve` / `record` / `audit` / `logs` auto-discover your local mihomo and connect — no need to type `--controller unix://… --secret …`.
 
-- **它怎么找**：按固定优先级读本机已知客户端的运行时 mihomo 配置，取出 `external-controller`（TCP）、`external-controller-unix`（socket）与 `secret`，逐个用 `/version` 探活，用**第一个活的**（同一配置内 unix socket 优先）。支持的客户端（来源顺序）：
-    1. **[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev)**（GUI，主场景）：macOS 在 `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/config.yaml`，Linux 在对应 app-data 目录。
-    2. **裸 mihomo**（`~/.config/mihomo/config.yaml`）：覆盖跑在非默认端口、或设了 secret 的裸 mihomo（默认 `127.0.0.1:9090`、无 secret 的那种由下面的回退直接覆盖，无需读配置）。
-- **发现不到就回退**：没装 Verge、或它没在跑 → 回退到 `127.0.0.1:9090` 照常连（原本 9090 上的裸 mihomo 零参数仍能用）。启动行会明确提示是「自动发现」还是「回退」。
-- **显式恒赢（all-or-nothing）**：只要你显式给了 `--controller`（或 env / 配置文件里写了 `controller`），就**完全不发现**、原样尊重你的值。
-- **不泄密**：启动行只打印发现到的 controller 与来源客户端，**secret 绝不打印/记录**。
+- **How it finds it**: it reads known clients' runtime mihomo config in a fixed priority order, extracts `external-controller` (TCP), `external-controller-unix` (socket) and `secret`, probes each with `/version`, and uses the **first live one** (unix socket first within a config). Supported clients (source order):
+    1. **[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev)** (GUI, the main case): macOS at `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/config.yaml`, Linux at the corresponding app-data directory.
+    2. **Bare mihomo** (`~/.config/mihomo/config.yaml`): covers a bare mihomo on a non-default port or with a secret set (the plain `127.0.0.1:9090`-with-no-secret case is already covered by the fallback below, no config read needed).
+- **Fallback when nothing is found**: no Verge, or it isn't running → fall back to `127.0.0.1:9090` and connect as usual (a bare mihomo on 9090 still works zero-arg). The startup line clearly states whether it "auto-discovered" or "fell back."
+- **Explicit always wins (all-or-nothing)**: the moment you give `--controller` explicitly (or set `controller` via env / config file), discovery is **skipped entirely** and your value is used as-is.
+- **No secret leakage**: the startup line only prints the discovered controller and its source client; the **secret is never printed or logged**.
 
 ```bash
-# 用 Verge 时，这样就够了——自动找到 socket、带上 secret：
+# With Verge, this is all you need — it finds the socket and carries the secret:
 ./inhomo logs
 # [inhomo] 从 Clash Verge Rev 自动发现 controller unix:///tmp/verge/verge-mihomo.sock
 ```
 
-决策与优先级细节见 ADR-0010（并重访了 ADR-0009 的「内置默认」层）。
+The decision and priority details are in ADR-0010 (which also revisits the "built-in default" layer of ADR-0009).
 
-> 只读上述已知客户端的配置。其它来源（如把 mihomo 装在自定义 `-d` 目录、或用别的 GUI）暂不自动发现——显式给 `--controller`/`--secret`，或写进 `~/.inhomo/config.yaml` 即可。
+> Only the known clients above are read. Other sources (mihomo installed in a custom `-d` directory, or a different GUI) are not auto-discovered yet — pass `--controller`/`--secret` explicitly, or put them in `~/.inhomo/config.yaml`.
 
-## 配置
+## Configuration
 
-除命令行 flag 外，上述参数也可写进 **`~/.inhomo/config.yaml`** 或用 **`INHOMO_*` 环境变量**提供。三者优先级：
+Besides command-line flags, the parameters above can also live in **`~/.inhomo/config.yaml`** or come from **`INHOMO_*` environment variables**. Precedence of the three:
 
-> **显式 flag > 环境变量 > 配置文件 > 内置默认**
+> **explicit flag > environment variable > config file > built-in default**
 
-其中「内置默认」这一层，对 `controller` 而言不再是死的 `127.0.0.1:9090`，而是[自动发现本机 mihomo](#本机-mihomo-自动发现)、发现不到才回退 `127.0.0.1:9090`（见 ADR-0010）。
+For `controller`, that "built-in default" layer is no longer a hard-coded `127.0.0.1:9090` — it [auto-discovers your local mihomo](#local-mihomo-auto-discovery) and only falls back to `127.0.0.1:9090` when nothing is found (see ADR-0010).
 
-[后台常驻](#后台常驻)（`brew services`）时尤其有用：把 controller 写进配置，服务就无需在命令行反复传 `--controller unix://…`。文件不存在按默认走（不报错）；文件存在但格式错会报错。详见 ADR-0009。
+This is especially handy when [running as a background service](#run-as-a-background-service) (`brew services`): put the controller in the config and the service needs no repeated `--controller unix://…` on the command line. A missing file falls back to defaults (no error); a present-but-malformed file errors out. See ADR-0009.
 
-`~/.inhomo/config.yaml` 示例（键名同 flag 名，`serve`/`record`/`audit`/`logs` 共享一份，各取所需）：
+`~/.inhomo/config.yaml` example (keys match the flag names; one file is shared by `serve`/`record`/`audit`/`logs`, each taking what it needs):
 
 ```yaml
 controller: unix:///tmp/verge/verge-mihomo.sock
@@ -273,25 +277,25 @@ http-ports: "80"
 window: 5m
 ```
 
-环境变量 = `INHOMO_` 前缀 + 键名大写、连字符换下划线：
+Environment variables = `INHOMO_` prefix + the uppercased key with hyphens turned into underscores:
 
 ```bash
 export INHOMO_CONTROLLER=unix:///tmp/verge/verge-mihomo.sock
-export INHOMO_TRAFFIC_INTERVAL=0   # 关闭流量采集
+export INHOMO_TRAFFIC_INTERVAL=0   # disable traffic sampling
 ```
 
-## 后台常驻
+## Run as a background service
 
-经 Homebrew 安装的 inhomo 自带 service 定义，用 `brew services` 即可让它后台常驻、登录/开机自启（mac 走 launchd、linux 走 systemd，一份定义两边覆盖）：
+An inhomo installed via Homebrew ships a service definition; `brew services` runs it in the background with login/boot autostart (launchd on mac, systemd on linux — one definition covers both):
 
 ```bash
-brew services start inhomo     # 起后台 serve，并登录/开机自启
-brew services stop inhomo      # 停
-brew services restart inhomo   # 改了 config.yaml 后重启生效
-brew services info inhomo      # 看状态
+brew services start inhomo     # start background serve + login/boot autostart
+brew services stop inhomo      # stop
+brew services restart inhomo   # restart to pick up config.yaml changes
+brew services info inhomo      # status
 ```
 
-常驻服务跑的是 `inhomo serve` 且**不带任何命令行参数**——controller / secret / db / addr 全从 [`~/.inhomo/config.yaml`](#配置) 读。所以起服务前先把配置写好，尤其 unix-socket 形态的 mihomo：
+The service runs `inhomo serve` with **no command-line arguments** — controller / secret / db / addr all come from [`~/.inhomo/config.yaml`](#configuration). So write the config first, especially for a unix-socket mihomo:
 
 ```yaml
 # ~/.inhomo/config.yaml
@@ -299,30 +303,31 @@ controller: unix:///tmp/verge/verge-mihomo.sock
 secret: ""
 ```
 
-> **别加 `sudo`**：`brew services start inhomo`（不带 sudo）以你的用户身份跑，`$HOME` 才是你的家目录，才能找到 `~/.inhomo/config.yaml` 和默认库 `~/.inhomo/connections.duckdb`。加 sudo 会以 root 跑、读不到你的配置。
+> **Don't add `sudo`**: `brew services start inhomo` (without sudo) runs as your user, so `$HOME` is your home directory and it can find `~/.inhomo/config.yaml` and the default DB `~/.inhomo/connections.duckdb`. With sudo it runs as root and can't read your config.
 >
-> **`INHOMO_*` 环境变量对守护进程无效**：launchd/systemd 不加载你的 shell（不读 `~/.zshrc`），故常驻场景请一律用 config.yaml，别指望 env。
+> **`INHOMO_*` env vars don't apply to the daemon**: launchd/systemd don't load your shell (they don't read `~/.zshrc`), so for the service always use config.yaml, not env.
 >
-> **别和手动 `serve` 抢库**：服务已在写默认库，就别再手动 `inhomo serve`/`record` 开同一个库（DuckDB 单写锁，见「[隐私与并发约束](#隐私与并发约束)」）。
+> **Don't fight over the DB with a manual `serve`**: the service is already writing the default DB, so don't also run `inhomo serve`/`record` on the same DB manually (DuckDB single-writer lock, see [Privacy and concurrency](#privacy-and-concurrency)).
 >
-> 服务日志写在 `$(brew --prefix)/var/log/inhomo.log`；仪表盘照常在 `http://127.0.0.1:8566/`。
+> Service logs go to `$(brew --prefix)/var/log/inhomo.log`; the dashboard is at `http://127.0.0.1:8566/` as usual.
 
-## Web 分析接口
+## Web analytics API
 
-`serve` 提供以下接口（同源，前端也由它托管）。未知的 `/api/*` 返回 404 JSON，其余未匹配路由回退到仪表盘 `index.html`（SPA）。
+`serve` exposes the following endpoints (same origin — it also hosts the frontend). Unknown `/api/*` return a 404 JSON; other unmatched routes fall back to the dashboard `index.html` (SPA).
 
-| 方法 | 路径 | 说明 |
+| Method | Path | Description |
 |---|---|---|
-| GET | `/` | React 仪表盘 |
-| GET | `/api/summary` | KPI 概要 |
-| GET | `/api/aggregate?by=&since=&limit=` | 按维度的 top-N |
-| GET | `/api/timeseries?since=&bucket=` | 按时间桶的连接数 |
+| GET | `/` | React dashboard |
+| GET | `/api/summary` | KPI overview |
+| GET | `/api/aggregate?by=&since=&limit=` | top-N by dimension |
+| GET | `/api/timeseries?since=&bucket=` | connection count per time bucket |
+| GET | `/api/trackers?since=&limit=` | tracker exposure: how many connections hit known trackers + top owners |
 
-**时间参数格式**：`since` / `bucket` 支持 Go 时长（`24h`、`90m`）或 `7d`（天）；`since` 留空表示「全部时间」。
+**Time parameter format**: `since` / `bucket` accept Go durations (`24h`, `90m`) or `7d` (days); an empty `since` means "all time."
 
-**`by` 维度白名单**：`host` / `process` / `node` / `region` / `port`（其它值返回 400）。
+**`by` dimension allow-list**: `host` / `process` / `node` / `region` / `port` (other values return 400).
 
-示例：
+Examples:
 
 ```bash
 curl 'http://127.0.0.1:8566/api/summary'
@@ -332,100 +337,102 @@ curl 'http://127.0.0.1:8566/api/summary'
 curl 'http://127.0.0.1:8566/api/aggregate?by=host&since=24h&limit=5'
 # [{"key":"api.github.com","count":16},{"key":"chatgpt.com","count":3}, ...]
 
-curl 'http://127.0.0.1:8566/api/timeseries?since=1h&bucket=5m'
-# [{"ts":"2026-07-18T14:15:00Z","count":41}]
+curl 'http://127.0.0.1:8566/api/trackers?since=7d&limit=5'
+# {"total":41,"tracker":12,"owners":[{"owner":"Google","count":8},{"owner":"comScore","count":4}]}
 ```
 
-`summary` 字段口径：`proxied` = 经出境节点（`node` 非空、非 `DIRECT`、非 `REJECT*`）；`direct` = 直连；`http`/`https` = 目的端口 80/443 的连接数。
+`summary` field semantics: `proxied` = through an egress node (`node` non-empty, not `DIRECT`, not `REJECT*`); `direct` = direct; `http`/`https` = connections to destination port 80/443.
 
-## 数据模型
+## Data model
 
-DuckDB 里只有一张表 `connections`，每条连接一行：
+DuckDB holds a single table `connections`, one row per connection:
 
-| 列 | 类型 | 含义 |
+| Column | Type | Meaning |
 |---|---|---|
-| `ts` | TIMESTAMP | 连接建立时刻 |
-| `process` | VARCHAR | 发起连接的进程名（可能为空） |
-| `network` | VARCHAR | 网络类型（如 TCP） |
-| `host` | VARCHAR | 目的 host |
-| `port` | INTEGER | 目的端口 |
-| `rule` | VARCHAR | mihomo 命中的分流规则 |
-| `node` | VARCHAR | 出境节点（`chains` 最后一个真实节点；直连为 `DIRECT`） |
-| `region` | VARCHAR | 从节点名推断的地区（国旗 emoji / 国家字样；推断不出为 `unknown`） |
+| `ts` | TIMESTAMP | When the connection was established |
+| `process` | VARCHAR | The process that opened the connection (may be empty) |
+| `network` | VARCHAR | Network type (e.g. TCP) |
+| `host` | VARCHAR | Destination host |
+| `port` | INTEGER | Destination port |
+| `rule` | VARCHAR | The mihomo routing rule that matched |
+| `node` | VARCHAR | Egress node (last real node in `chains`; `DIRECT` for direct) |
+| `region` | VARCHAR | Region inferred from the node name (flag emoji / country words; `unknown` if not inferable) |
 
-「明文 HTTP 泄露」只是这张表的一个过滤视图；仪表盘的各个面板则是它的不同 `GROUP BY`。库文件可直接用 `duckdb` CLI 打开做 ad-hoc 查询。
+"Plaintext-HTTP leak" is just one filtered view of this table; the dashboard panels are its various `GROUP BY`s. The DB file can be opened directly with the `duckdb` CLI for ad-hoc queries.
 
-## 连接到 mihomo
+## Connecting to mihomo
 
-inhomo 需要 mihomo 的 `external-controller`。两种形态都支持：
+inhomo needs mihomo's `external-controller`. Both forms are supported:
 
-- **TCP**（多数 clash 配置）：`--controller 127.0.0.1:9090`
-- **Unix socket**（如 Clash Verge Rev）：`--controller unix:///tmp/verge/verge-mihomo.sock`
+- **TCP** (most clash setups): `--controller 127.0.0.1:9090`
+- **Unix socket** (e.g. Clash Verge Rev): `--controller unix:///tmp/verge/verge-mihomo.sock`
 
-若 controller 配了 `secret`，用 `--secret <值>` 传入。
+If the controller has a `secret`, pass it with `--secret <value>`.
 
-> Clash Verge Rev 默认只暴露 Unix socket（`external-controller` 为空），socket 路径通常是 `/tmp/verge/verge-mihomo.sock`。
+> Clash Verge Rev by default only exposes a Unix socket (`external-controller` is empty); the socket path is usually `/tmp/verge/verge-mihomo.sock`.
 
-## 核心概念
+## Core concepts
 
-术语的精确定义见 [`CONTEXT.md`](./CONTEXT.md)：
+Precise term definitions are in [`CONTEXT.md`](./CONTEXT.md):
 
-- **明文 HTTP 连接** —— 经 mihomo 出站、目的端口属 HTTP 端口集的一条 TCP 连接（最小单位是「连接」，不是请求/数据包）。
-- **出境节点** —— `chains` 里最后一个真实代理节点；`DIRECT`/`REJECT` 不算。
-- **明文 HTTP 泄露事件** —— 告警核心单位 = 明文 HTTP 连接 **且** 经过出境节点。
-- **连接事件** —— 从 `/logs` 解析出的一条连接的结构化记录（全量），是 `record`/分析的基本单位。
-- **节点地区标签** —— 从节点名尽力解析的国家/地区，仅作分类标签，不作硬筛选（拿不到节点 IP，无法权威 GeoIP）。
+- **Plaintext-HTTP connection** — a TCP connection out through mihomo whose destination port is in the HTTP port set (the smallest unit is "connection," not request/packet).
+- **Egress node** — the last real proxy node in `chains`; `DIRECT`/`REJECT` don't count.
+- **Plaintext-HTTP leak event** — the core alert unit = a plaintext-HTTP connection **and** it went through an egress node.
+- **Connection event** — a structured record of one connection parsed from `/logs` (all of them), the basic unit for `record`/analytics.
+- **Node region label** — a best-effort country/region parsed from the node name, used only as a classification label, not a hard filter (node IPs aren't available, so no authoritative GeoIP).
 
-## 设计决策
+## Design decisions
 
-关键取舍记录在 [`docs/adr/`](./docs/adr/)：
+Key trade-offs are recorded in [`docs/adr/`](./docs/adr/) (the ADRs are written in Chinese):
 
-| ADR | 决策 |
+| ADR | Decision |
 |---|---|
-| [0001](./docs/adr/0001-node-region-by-name-not-geoip.md) | 地区按节点名解析，而非 GeoIP |
-| [0002](./docs/adr/0002-logs-stream-as-primary-source.md) | 以 `/logs` 流为主数据源（而非 `/connections` 快照） |
-| [0003](./docs/adr/0003-adopt-cobra-cli.md) | 采用 cobra 组织子命令 |
-| [0004](./docs/adr/0004-analytics-app-embed-duckdb.md) | 连接分析应用方向 + 嵌入式 DuckDB（CGO） |
-| [0005](./docs/adr/0005-serve-fiber-web-api.md) | `serve` 命令 + Fiber Web 分析接口 |
-| [0006](./docs/adr/0006-embedded-react-dashboard.md) | 内嵌 React 仪表盘（Vite + Antd + Recharts，go:embed） |
-| [0007](./docs/adr/0007-drilldown-detail-pages.md) | 数值钻取：过滤切片详情页 + react-router |
-| [0008](./docs/adr/0008-traffic-bytes-from-connections.md) | 历史流量分析：接 `/connections` 拿字节（独立 traffic 数据集） |
-| [0009](./docs/adr/0009-config-file-viper-precedence.md) | 引入配置文件（Viper：config + env + flag 优先级） |
-| [0010](./docs/adr/0010-controller-autodiscovery.md) | 本机 mihomo 自动发现（零参数连上，回退 9090） |
-| [0011](./docs/adr/0011-tracker-radar-classification.md) | 追踪器识别：Tracker Radar 运行期拉取 + 进程内归类 |
-| [0012](./docs/adr/0012-ai-privacy-report.md) | AI 隐私周报：只发聚合、查运行中的 serve、provider 抽象 |
+| [0001](./docs/adr/0001-node-region-by-name-not-geoip.md) | Region from node name, not GeoIP |
+| [0002](./docs/adr/0002-logs-stream-as-primary-source.md) | `/logs` stream as the primary source (not the `/connections` snapshot) |
+| [0003](./docs/adr/0003-adopt-cobra-cli.md) | Adopt cobra for subcommands |
+| [0004](./docs/adr/0004-analytics-app-embed-duckdb.md) | Connection-analytics direction + embedded DuckDB (CGO) |
+| [0005](./docs/adr/0005-serve-fiber-web-api.md) | `serve` command + Fiber web analytics API |
+| [0006](./docs/adr/0006-embedded-react-dashboard.md) | Embedded React dashboard (Vite + Antd + Recharts, go:embed) |
+| [0007](./docs/adr/0007-drilldown-detail-pages.md) | Metric drill-down: filter-slice detail pages + react-router |
+| [0008](./docs/adr/0008-traffic-bytes-from-connections.md) | Historical traffic analysis: bytes from `/connections` (a separate traffic dataset) |
+| [0009](./docs/adr/0009-config-file-viper-precedence.md) | Config file (Viper: config + env + flag precedence) |
+| [0010](./docs/adr/0010-controller-autodiscovery.md) | Local mihomo auto-discovery (zero-arg connect, fall back to 9090) |
+| [0011](./docs/adr/0011-tracker-radar-classification.md) | Tracker identification: Tracker Radar fetched at runtime + in-process classification |
+| [0012](./docs/adr/0012-ai-privacy-report.md) | AI privacy report: aggregates-only, query a running serve, provider abstraction |
 
-关于 mihomo `/logs` 的技术细节（格式、级别、投递语义、留存）见 [`docs/mihomo-logs.md`](./docs/mihomo-logs.md)。
+Technical details of mihomo's `/logs` (format, levels, delivery semantics, retention) are in [`docs/mihomo-logs.md`](./docs/mihomo-logs.md).
 
-## 项目结构
+## Project layout
 
 ```
-main.go                 入口（cli.Execute）
+main.go                 entry point (cli.Execute)
 internal/
-  cli/                  cobra 子命令：audit / logs / record / serve
-  logstream/            /logs 流客户端（TCP + Unix socket，断线重连）
-  detect/               连接日志解析 + 明文HTTP泄露分类 + 地区推断
-  aggregate/            audit 的 (节点,host) 时间窗去重
-  sink/                 JSONL 落盘
-  store/                嵌入式 DuckDB：写入（Appender）+ 查询（summary/aggregate/timeseries）
-web/                    Vite + React + TS 仪表盘；embed.go 用 go:embed 打包 dist
-docs/adr/               架构决策记录
-CONTEXT.md              领域术语表
-Makefile                make = 前端 + 内嵌 + go build
+  cli/                  cobra subcommands: audit / logs / record / serve / tracker / report / version
+  logstream/            /logs stream client (TCP + Unix socket, auto-reconnect); /version liveness probe
+  detect/               connection-log parsing + plaintext-HTTP leak classification + region inference
+  aggregate/            audit's (node, host) time-window de-duplication
+  sink/                 JSONL output
+  store/                embedded DuckDB: writes (Appender) + queries (summary/aggregate/timeseries/trackers)
+  tracker/              offline tracker classifier: host → eTLD+1 → known tracker + owner (Tracker Radar, fetched at runtime)
+  ai/                   LLM provider abstraction + implementations (Anthropic, OpenAI-compatible like DeepSeek), used by report
+web/                    Vite + React + TS dashboard; embed.go packs dist via go:embed
+docs/adr/               architecture decision records
+CONTEXT.md              domain glossary
+Makefile                make = frontend + embed + go build
 ```
 
-## 隐私与并发约束
+## Privacy and concurrency
 
-- **默认只绑本机、无鉴权**：`serve` 默认监听 `127.0.0.1:8566`。你的访问历史是敏感数据，不要把 `--addr` 改成非回环地址暴露到网络（会打印警告）。
-- **DuckDB 单写锁**：一个 `.duckdb` 文件同一时刻只能被一个进程写。因此**不要对同一个库同时跑 `record` 和 `serve`**（`serve` 已包含记录）。若另一个 inhomo 进程正锁着默认库，再开一个会报 `Conflicting lock` —— 换一个 `--db` 路径，或先停掉那个进程。
-- **数据不出机**：全部本地存储、本地查询，没有任何外发。
+- **Loopback-only, no auth by default**: `serve` listens on `127.0.0.1:8566`. Your browsing history is sensitive — don't set `--addr` to a non-loopback address and expose it to the network (it prints a warning).
+- **DuckDB single-writer lock**: a `.duckdb` file can be written by only one process at a time. So **don't run `record` and `serve` on the same DB at once** (`serve` already records). If another inhomo process holds the default DB, a second one errors with `Conflicting lock` — use a different `--db` path, or stop the other process.
+- **Local by default; outbound traffic is minimal and explicit**: the core path (`audit` / `record` / `serve` / dashboard) stores and queries everything locally with zero outbound traffic. Only two commands touch the network, and both are things you trigger on purpose: `tracker update` **downloads** the tracker database to your machine (it uploads none of your data); `report` sends only **aggregates** (owning companies / nodes / regions + counts, **never raw visited domains**) to your configured LLM. Run neither and nothing goes out.
 
-## 开发
+## Development
 
 ```bash
-make test                       # 全套 Go 测试（CGO）
-go test ./internal/detect/...   # 单包
-npm --prefix web run build      # 单独构建前端（tsc + vite）
+make test                       # full Go test suite (CGO)
+go test ./internal/detect/...   # a single package
+npm --prefix web run build      # build the frontend alone (tsc + vite)
 ```
 
-前端改动后记得 `make frontend` 重建 `web/dist` 并提交——`go:embed` 内嵌的是已提交的构建产物。
+After frontend changes, remember to `make frontend` to rebuild `web/dist` and commit it — `go:embed` bundles the committed build output.
