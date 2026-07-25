@@ -15,6 +15,10 @@ import {
   FLOW_METRICS,
   flowMetricFromParams,
   isByteMetric,
+  type ExfilRow,
+  coverageOf,
+  isWellEvidenced,
+  COVERAGE_MIN,
 } from './api'
 
 describe('filterParams ↔ filterFromParams 往返不变量', () => {
@@ -222,5 +226,35 @@ describe('FLOW_METRICS（拓扑度量选项单一事实源）', () => {
   it('四个度量 + 中文标签，顺序 连接数/合计/上行/下行', () => {
     expect(FLOW_METRICS.map((m) => m.value)).toEqual(['count', 'total', 'up', 'down'])
     expect(FLOW_METRICS.map((m) => m.label)).toEqual(['连接数', '合计', '上行', '下行'])
+  })
+})
+
+describe('采样覆盖率（外发比结论的证据基础，见 ADR-0013）', () => {
+  const row = (sampled: number, logged: number): ExfilRow => ({
+    process: 'p',
+    host: 'h',
+    up: 1,
+    down: 1,
+    ratio: 1,
+    sampled,
+    logged,
+  })
+
+  it('覆盖率 = 抽样行数 / 全量行数', () => {
+    expect(coverageOf(row(10, 20))).toBe(0.5)
+    expect(coverageOf(row(9, 10))).toBeCloseTo(0.9)
+  })
+
+  it('分母为 0（该通道没有连接事件）→ null，表示无从判断而非 0%', () => {
+    expect(coverageOf(row(3, 0))).toBeNull()
+  })
+
+  it('达到下限算证据充分，低于下限算不足', () => {
+    expect(isWellEvidenced(row(COVERAGE_MIN * 100, 100))).toBe(true)
+    expect(isWellEvidenced(row(COVERAGE_MIN * 100 - 1, 100))).toBe(false)
+  })
+
+  it('无从判断覆盖率的行按证据不足处理（不给它免检）', () => {
+    expect(isWellEvidenced(row(3, 0))).toBe(false)
   })
 })

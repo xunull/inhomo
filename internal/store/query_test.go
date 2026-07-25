@@ -580,3 +580,321 @@ func TestStore_flowMetric(t *testing.T) {
 		t.Errorf("非法 metric 应 ErrBadMetric，得 %v", err)
 	}
 }
+
+// seedBoth 建临时库并同时写入连接事件（全量，覆盖率分母）与流量记录（抽样，字节账）。
+// Exfil 是唯一跨两张表的查询，故需要一个两表都能落的 helper。
+func seedBoth(t *testing.T, evs []Event, recs []TrafficRecord) *Store {
+	t.Helper()
+	s, err := Open(filepath.Join(t.TempDir(), "ex.duckdb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	for _, e := range evs {
+		if err := s.Add(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		if err := s.AddTraffic(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s
+}
+
+// TestStore_exfil 覆盖外发比：按应用通道聚合、比值降序、两种门槛、覆盖率分母取自 connections、
+// 下行为 0 不除零、空进程排除、低覆盖率不被隐式过滤。
+func TestStore_exfil(t *testing.T) {
+	now := time.Now()
+	ev := func(proc, host string) Event {
+		return Event{TS: now, Process: proc, Network: "tcp", Host: host, Port: 443, Node: "n", Region: "hk"}
+	}
+	rec := func(proc, host string, up, down int64) TrafficRecord {
+		return TrafficRecord{
+			Start: now, Process: proc, Network: "tcp", Host: host, Port: 443,
+			Node: "n", Region: "hk", UpBytes: up, DownBytes: down, DurationMs: 1000,
+		}
+	}
+	rep := func(n int, r TrafficRecord) []TrafficRecord {
+		out := make([]TrafficRecord, n)
+		for i := range out {
+			out[i] = r
+		}
+		return out
+	}
+	repEv := func(n int, e Event) []Event {
+		out := make([]Event, n)
+		for i := range out {
+			out[i] = e
+		}
+		return out
+	}
+
+	// 空库：空切片（非 nil，JSON 为 []）、不报错。
+	if rows, err := seedBoth(t, nil, nil).Exfil(Filter{}, 10, 1, 1); err != nil || rows == nil || len(rows) != 0 {
+		t.Fatalf("空库应返回空切片，得 %+v（err %v）", rows, err)
+	}
+
+	var evs []Event
+	evs = append(evs, repEv(20, ev("A", "x"))...) // A→x 全量 20 条，只采样到 10 条 → 覆盖率 50%
+	evs = append(evs, repEv(10, ev("A", "y"))...)
+	evs = append(evs, repEv(2, ev("B", "z"))...)
+	// C→q 只有流量记录、无连接事件 → Logged 应为 0（COALESCE 生效）
+
+	var recs []TrafficRecord
+	recs = append(recs, rep(10, rec("A", "x", 100, 10))...)   // up 1000 / down 100 → 比值 10
+	recs = append(recs, rep(10, rec("A", "y", 100, 1000))...) // up 1000 / down 10000 → 比值 0.1
+	recs = append(recs, rep(2, rec("B", "z", 2500, 0))...)    // up 5000 / down 0 → 比值 5000（不除零）
+	recs = append(recs, rep(5, rec("", "w", 9999, 1))...)     // 空进程 → 构不成应用通道，须排除
+	recs = append(recs, rep(3, rec("C", "q", 300, 100))...)   // 无对应连接事件 → Logged 0
+
+	s := seedBoth(t, evs, recs)
+
+	// 门槛放到最松（显式传 1），验证排序与全部行。
+	rows, err := s.Exfil(Filter{}, 10, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Process == "" {
+			t.Errorf("空进程不构成应用通道，不应出现：%+v", r)
+		}
+	}
+	want := []struct {
+		proc, host string
+		ratio      float64
+	}{
+		{"B", "z", 5000}, // 下行 0 → greatest(down,1)，不 panic 不 Inf
+		{"A", "x", 10},
+		{"C", "q", 3},
+		{"A", "y", 0.1},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("应有 %d 条通道，得 %d：%+v", len(want), len(rows), rows)
+	}
+	for i, w := range want {
+		if rows[i].Process != w.proc || rows[i].Host != w.host {
+			t.Errorf("第 %d 行应为 %s→%s，得 %s→%s（比值须降序）", i, w.proc, w.host, rows[i].Process, rows[i].Host)
+		}
+		if diff := rows[i].Ratio - w.ratio; diff > 0.001 || diff < -0.001 {
+			t.Errorf("%s→%s 外发比应约 %v，得 %v", w.proc, w.host, w.ratio, rows[i].Ratio)
+		}
+	}
+
+	// 覆盖率分子分母：A→x 采样 10 / 全量 20；C→q 无连接事件 → 0。
+	byKey := map[string]ExfilRow{}
+	for _, r := range rows {
+		byKey[r.Process+"→"+r.Host] = r
+	}
+	if got := byKey["A→x"]; got.Sampled != 10 || got.Logged != 20 {
+		t.Errorf("A→x 覆盖率应为 10/20（分母取自 connections），得 %d/%d", got.Sampled, got.Logged)
+	}
+	if got := byKey["C→q"]; got.Logged != 0 {
+		t.Errorf("无连接事件的通道 Logged 应为 0，得 %d", got.Logged)
+	}
+	// 低覆盖率（50%）的 A→x 仍在结果里——门槛只挡小样本，可信度交给 UI 披露，不隐式过滤。
+	if _, ok := byKey["A→x"]; !ok {
+		t.Error("低覆盖率的行不应被隐式过滤掉")
+	}
+
+	// minSampled 门槛：挡掉只有 2 条流量记录的 B→z（外发比最高但小样本噪音）。
+	rows, err = s.Exfil(Filter{}, 10, 1, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Process == "B" {
+			t.Errorf("minSampled=3 应挡掉只有 2 条记录的 B→z，得 %+v", r)
+		}
+	}
+
+	// minUp 门槛：只有 B→z 的上行达到 5000。
+	rows, err = s.Exfil(Filter{}, 10, 5000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Process != "B" {
+		t.Errorf("minUp=5000 应只剩 B→z，得 %+v", rows)
+	}
+
+	// 过滤切片同时套两张表：只看 A 的通道。
+	rows, err = s.Exfil(Filter{Process: "A"}, 10, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("切片 process=A 应剩 2 条通道，得 %+v", rows)
+	}
+	for _, r := range rows {
+		if r.Process != "A" {
+			t.Errorf("切片外的通道不应出现：%+v", r)
+		}
+	}
+	// 切片同样作用于覆盖率分母（connections 侧也带上了 process=A）。
+	if rows[0].Host != "x" || rows[0].Logged != 20 {
+		t.Errorf("切片内 A→x 覆盖率分母仍应为 20，得 %s/%d", rows[0].Host, rows[0].Logged)
+	}
+
+	// limit 生效。
+	rows, err = s.Exfil(Filter{}, 2, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("limit=2 应返回 2 条，得 %d", len(rows))
+	}
+}
+
+// TestStore_newChannels 覆盖新鲜度：首次出现取**全库** min 而非窗口内 min（本测试的核心）、
+// 窗口边界、徽章判定（经出境节点 / 明文 80）、空进程排除、连接数统计、空库不报错。
+func TestStore_newChannels(t *testing.T) {
+	now := time.Now()
+	ev := func(proc, host string, port int, node string, ago time.Duration) Event {
+		return Event{
+			TS: now.Add(-ago), Process: proc, Network: "tcp",
+			Host: host, Port: port, Rule: "r", Node: node, Region: "hk",
+		}
+	}
+
+	// 空库：空切片（非 nil）、不报错。
+	if chs, err := seed(t, nil).NewChannels(24*time.Hour, 0); err != nil || chs == nil || len(chs) != 0 {
+		t.Fatalf("空库应返回空切片，得 %+v（err %v）", chs, err)
+	}
+
+	s := seed(t, []Event{
+		// A→old.com：48h 前就出现过，窗口内也仍在连——首次出现在窗口外，**不算新**。
+		// 这是本测试的核心：若误用「窗口内 min(ts)」，它会被错报为新增。
+		ev("A", "old.com", 443, "🇺🇸US", 48*time.Hour),
+		ev("A", "old.com", 443, "🇺🇸US", 1*time.Hour),
+		// A→new.com：首次出现在 2h 前 → 24h 窗内算新；两条连接 → count=2。
+		ev("A", "new.com", 443, "🇺🇸US", 2*time.Hour),
+		ev("A", "new.com", 443, "🇺🇸US", 1*time.Hour),
+		// B→mid.com：30h 前首次 → 24h 窗外、7d 窗内（窗口边界用例）。
+		ev("B", "mid.com", 443, "🇺🇸US", 30*time.Hour),
+		// C→direct.com：只走直连 → 无「经出境节点」徽章。
+		ev("C", "direct.com", 443, "DIRECT", 1*time.Hour),
+		// D→plain.com：明文 80 且经出境节点 → 两个徽章都亮。
+		ev("D", "plain.com", 80, "🇯🇵JP", 1*time.Hour),
+		// 空进程：构不成应用通道，须排除。
+		ev("", "noproc.com", 443, "🇺🇸US", 1*time.Hour),
+	})
+
+	chs, err := s.NewChannels(24*time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]NewChannel{}
+	for _, c := range chs {
+		if c.Process == "" {
+			t.Errorf("空进程不应出现：%+v", c)
+		}
+		got[c.Process+"→"+c.Host] = c
+	}
+
+	if _, ok := got["A→old.com"]; ok {
+		t.Error("A→old.com 首次出现在窗口外（48h 前），不应算新增——首次出现须取全库 min(ts)，非窗口内 min")
+	}
+	if _, ok := got["B→mid.com"]; ok {
+		t.Error("B→mid.com 首次出现在 30h 前，不应进 24h 窗")
+	}
+	if len(chs) != 3 {
+		t.Fatalf("24h 窗应有 3 条新增（A→new.com / C→direct.com / D→plain.com），得 %d：%+v", len(chs), chs)
+	}
+
+	if c := got["A→new.com"]; c.Count != 2 || !c.Proxied || c.Plaintext {
+		t.Errorf("A→new.com 应为 2 条连接、经出境节点、非明文，得 %+v", c)
+	}
+	if c := got["C→direct.com"]; c.Proxied {
+		t.Errorf("C→direct.com 只走直连，不应标「经出境节点」，得 %+v", c)
+	}
+	if c := got["D→plain.com"]; !c.Plaintext || !c.Proxied {
+		t.Errorf("D→plain.com 应同时标明文与经出境节点，得 %+v", c)
+	}
+	if c := got["A→new.com"]; c.FirstTS.After(now.Add(-90*time.Minute)) {
+		t.Errorf("A→new.com 首次时刻应是 2h 前那条（取最早），得 %v", c.FirstTS)
+	}
+
+	// 7d 窗：老通道 A→old.com（48h 前首次）与 B→mid.com 都进来了。
+	chs7, err := s.NewChannels(7*24*time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chs7) != 5 {
+		t.Errorf("7d 窗应有 5 条新增（含 old/mid），得 %d：%+v", len(chs7), chs7)
+	}
+
+	// limit 生效。
+	if chs, err := s.NewChannels(7*24*time.Hour, 2); err != nil || len(chs) != 2 {
+		t.Errorf("limit=2 应返回 2 条，得 %d（err %v）", len(chs), err)
+	}
+}
+
+// TestStore_effectiveNewChannelsLimit 钉住上限归一逻辑——serve 层用同一函数判断结果是否被截断，
+// 两边算法必须是同一个（否则「truncated」会说谎）。
+func TestStore_effectiveNewChannelsLimit(t *testing.T) {
+	cases := []struct{ in, want int }{
+		{0, DefaultNewChannelsLimit},
+		{-1, DefaultNewChannelsLimit},
+		{50, 50},
+		{MaxNewChannelsLimit + 1, MaxNewChannelsLimit},
+	}
+	for _, c := range cases {
+		if got := EffectiveNewChannelsLimit(c.in); got != c.want {
+			t.Errorf("EffectiveNewChannelsLimit(%d) = %d，应为 %d", c.in, got, c.want)
+		}
+	}
+}
+
+// TestStore_coverage 覆盖观测覆盖：从连接密度反推——最早/最晚、有数据的小时数、空洞检测。
+func TestStore_coverage(t *testing.T) {
+	// 空库：时间为 nil、无空洞、不报错。
+	cov, err := seed(t, nil).Coverage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cov.Earliest != nil || cov.Latest != nil || cov.CoveredHours != 0 || len(cov.Gaps) != 0 {
+		t.Fatalf("空库应为零值覆盖，得 %+v", cov)
+	}
+
+	// 小时 0、1 有数据，2~4 无（记录中断），5 恢复 → 一个 4 小时空洞、3 个有数据的小时。
+	base := time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)
+	ev := func(h int) Event {
+		return Event{
+			TS: base.Add(time.Duration(h) * time.Hour), Process: "p", Network: "tcp",
+			Host: "x.com", Port: 443, Rule: "r", Node: "n", Region: "hk",
+		}
+	}
+	cov, err = seed(t, []Event{ev(0), ev(0), ev(1), ev(5)}).Coverage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cov.CoveredHours != 3 {
+		t.Errorf("应有 3 个有数据的小时桶，得 %d", cov.CoveredHours)
+	}
+	if cov.Earliest == nil || !cov.Earliest.Equal(base) {
+		t.Errorf("最早应为 %v，得 %v", base, cov.Earliest)
+	}
+	if len(cov.Gaps) != 1 {
+		t.Fatalf("应检出 1 个空洞，得 %d：%+v", len(cov.Gaps), cov.Gaps)
+	}
+	g := cov.Gaps[0]
+	if g.Hours != 4 {
+		t.Errorf("空洞应为 4 小时（1 点 → 5 点），得 %d", g.Hours)
+	}
+	if !g.Start.Equal(base.Truncate(time.Hour).Add(time.Hour)) {
+		t.Errorf("空洞起点应为 1 点整（最后一个有数据的小时桶），得 %v", g.Start)
+	}
+
+	// 连续小时不算空洞（阈值是「相隔超过 1 小时」）。
+	cov, err = seed(t, []Event{ev(0), ev(1), ev(2)}).Coverage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cov.Gaps) != 0 {
+		t.Errorf("连续三小时不应有空洞，得 %+v", cov.Gaps)
+	}
+}

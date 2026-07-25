@@ -1,6 +1,6 @@
 import { Row, Col, Card, Statistic, Typography } from 'antd'
 import { useNavigate } from 'react-router'
-import { getSummary, detailPath, type Dimension, type Filter } from '../api'
+import { getSummary, getNewCount, detailPath, type Dimension, type Filter } from '../api'
 import { useApi } from '../useApi'
 import { fmtDateTime } from '../format'
 import AsyncBody from './AsyncBody'
@@ -20,6 +20,14 @@ export default function KpiBar({
 }) {
   const navigate = useNavigate()
   const state = useApi(() => getSummary(filter), [filter, refreshKey])
+
+  // 「24h 新增」是 /new 的入口钩子。只在全集切片（主页）出现：新鲜度不接受过滤切片
+  // （首次出现要拿窗口外历史当参照系），摆在详情页上会被误读成「该切片内的新增」。
+  const isWholeSet = Object.keys(filter).length === 0
+  const newCount = useApi(() => (isWholeSet ? getNewCount('24h') : Promise.resolve({ count: 0 })), [
+    isWholeSet,
+    refreshKey,
+  ])
 
   return (
     <AsyncBody state={state} skeletonRows={2}>
@@ -56,6 +64,23 @@ export default function KpiBar({
                 </Col>
               )
             })}
+            {isWholeSet && (
+              <Col xs={12} sm={8} md={6} xl={3}>
+                {/* /new 的入口：数字本身就是钩子——「24h 新增 254」比一个「新增」链接更容易被点。 */}
+                <Card
+                  size="small"
+                  hoverable
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => navigate('/new?since=24h')}
+                >
+                  <Statistic
+                    title="24h 新增 →"
+                    value={newCount.data ? newCount.data.count : '—'}
+                    valueStyle={{ color: '#d4380d' }}
+                  />
+                </Card>
+              </Col>
+            )}
             <Col xs={24}>
               <Card size="small">
                 <Text type="secondary">时间跨度：</Text>

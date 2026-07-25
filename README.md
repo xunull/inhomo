@@ -277,13 +277,22 @@ traffic-interval: 3s
 addr: 127.0.0.1:8566
 http-ports: "80"
 window: 5m
+# Processes collapsed by default in the novelty view (comma-separated,
+# case-insensitive substring match): the ones whose destination you pick
+# yourself, so their new domains are the product of your own clicks rather
+# than evidence of anything going on behind your back. Collapsed, never
+# dropped — always one click away. Empty means collapse nothing.
+mute-processes: "Google Chrome,Safari,Firefox,Microsoft Edge"
 ```
+
+> `mute-processes` deliberately lists only major browser names. Because the match is by substring, `Google Chrome Helper` (the process that actually opens the connections) is caught correctly — while **non-browser** Helper processes (mini-program containers, AI clients, third-party apps that merely have "Browser" in their name) contain no browser name and are **not** caught. You open those too, but *they* pick the destination, which is exactly what this view exists to show you.
 
 Environment variables = `INHOMO_` prefix + the uppercased key with hyphens turned into underscores:
 
 ```bash
 export INHOMO_CONTROLLER=unix:///tmp/verge/verge-mihomo.sock
 export INHOMO_TRAFFIC_INTERVAL=0   # disable traffic sampling
+export INHOMO_MUTE_PROCESSES=""    # collapse nothing in the novelty view
 ```
 
 ## Run as a background service
@@ -324,6 +333,9 @@ secret: ""
 | GET | `/api/aggregate?by=&since=&limit=` | top-N by dimension |
 | GET | `/api/timeseries?since=&bucket=` | connection count per time bucket |
 | GET | `/api/trackers?since=&limit=` | tracker exposure: how many connections hit known trackers + top owners |
+| GET | `/api/exfil?since=&limit=&minUp=&minSampled=` | outbound ratio: top app-channels `(app, host)` by upload/download ratio, each row carrying its sampling coverage |
+| GET | `/api/new?since=&limit=` | novelty: app-channels seen for the first time within the window, grouped by app + observation coverage |
+| GET | `/api/new/count?since=` | novelty count (powers the dashboard KPI entry; same scope as the un-collapsed part of `/api/new`) |
 
 **Time parameter format**: `since` / `bucket` accept Go durations (`24h`, `90m`) or `7d` (days); an empty `since` means "all time."
 
@@ -341,7 +353,15 @@ curl 'http://127.0.0.1:8566/api/aggregate?by=host&since=24h&limit=5'
 
 curl 'http://127.0.0.1:8566/api/trackers?since=7d&limit=5'
 # {"total":41,"tracker":12,"owners":[{"owner":"Google","count":8},{"owner":"comScore","count":4}]}
+
+curl 'http://127.0.0.1:8566/api/exfil?since=7d&limit=2'
+# [{"process":"MusicApp","host":"mssdk.example.com","up":13224470,"down":1255406,
+#   "ratio":10.53,"sampled":156,"logged":273}, ...]
 ```
+
+`new` field semantics: a new app-channel means that `(app, host)` pair's earliest connection *in the whole database* falls inside the window — i.e. "this app started talking to somewhere it never talked to before." The baseline is the all-time minimum, not the in-window minimum, which is why this endpoint **takes no filter slice** (a slice only narrows what is visible, and applying one would shift the baseline itself). `coverage` is the observation coverage: the time ranges actually being recorded plus their gaps, inferred from hours that have zero connections — **channels that appeared while recording was down get misreported as new once it resumes**, so the conclusion ships with its evidence base. `muted` marks "processes whose destination the user picks" (major browsers by default, see `--mute-processes`): their new domains are the result of your own clicks, so they are collapsed by default but never dropped. `proxied` / `plaintext` / `tracker` are badges — labelled, never used as filters.
+
+`exfil` field semantics: `ratio` = `up / max(down, 1)` — sorts by *direction*, not volume, so telemetry channels that never make the byte-size top-N surface here. `sampled` / `logged` are the raw numerator and denominator of the sampling coverage (rows in the sampled `traffic` table vs rows in the full `connections` table): a low ratio means most of that channel's connections have no byte accounting, so the number is only the accounting of a few long-lived connections. Thresholds `minUp` (default 5 MB) and `minSampled` (default 10) block small-sample noise; low coverage is *disclosed, never silently filtered*.
 
 `summary` field semantics: `proxied` = through an egress node (`node` non-empty, not `DIRECT`, not `REJECT*`); `direct` = direct; `http`/`https` = connections to destination port 80/443.
 
