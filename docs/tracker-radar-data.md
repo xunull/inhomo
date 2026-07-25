@@ -42,7 +42,7 @@ inhomo tracker update
 ## 3. 怎么被使用（三个消费方，都靠它）
 
 归类器（`internal/tracker`）把这张表**加载进内存**成一张查表。查一个连接的目的 `host` 时：
-取它的 **eTLD+1**（用公共后缀，`www.google-analytics.com` → `google-analytics.com`）在表里找——
+取它的 **[eTLD+1](./etld-plus-one.md)**（可注册域，用公共后缀把 `www.google-analytics.com` → `google-analytics.com`）在表里找——
 命中 = 已知追踪器 + 归属公司；没命中（含 IP、单标签等取不到 eTLD+1 的）= 未知。**下载后全程离线查，不再联网。**
 
 | 消费方 | 用途 |
