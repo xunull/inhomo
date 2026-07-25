@@ -158,6 +158,7 @@ export interface TrackerBreakdown {
   total: number
   tracker: number
   owners: OwnerCount[]
+  loaded: boolean // 追踪器数据是否已拉取；false → 提示跑 `inhomo tracker update`
 }
 
 export const getTrackers = (f: Filter = EMPTY_FILTER, since = '', limit = 8) =>

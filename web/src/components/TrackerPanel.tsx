@@ -1,4 +1,4 @@
-import { Card, Progress, Typography, Empty } from 'antd'
+import { Card, Progress, Typography, Empty, Alert } from 'antd'
 import { getTrackers, type Filter } from '../api'
 import { useApi } from '../useApi'
 import AsyncBody from './AsyncBody'
@@ -32,6 +32,19 @@ export default function TrackerPanel({ filter, since, refreshKey, limit = 8 }: T
           const height = Math.max(120, rows.length * 30)
           return (
             <>
+              {!data.loaded && (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="未拉取追踪器数据"
+                  description={
+                    <>
+                      运行 <code>inhomo tracker update</code> 后刷新，即可识别已知追踪器并显示归属公司。
+                    </>
+                  }
+                  style={{ marginBottom: 12 }}
+                />
+              )}
               <Text>
                 {data.tracker.toLocaleString()} / {data.total.toLocaleString()} 条连接命中已知追踪器
               </Text>
@@ -41,16 +54,19 @@ export default function TrackerPanel({ filter, since, refreshKey, limit = 8 }: T
                 style={{ marginTop: 4 }}
                 aria-label="已知追踪器连接占比"
               />
-              {rows.length === 0 ? (
-                <Empty
-                  description="未发现已知追踪器（或未拉取追踪器数据）"
-                  image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  style={{ marginTop: 12 }}
-                />
-              ) : (
+              {rows.length > 0 ? (
                 <div style={{ marginTop: 12 }}>
                   <HBarChart rows={rows} color="#cf1322" height={height} />
                 </div>
+              ) : (
+                // 已加载但零命中 → 明确「没追踪器」；未加载已有上面的 Alert，不再放空框。
+                data.loaded && (
+                  <Empty
+                    description="未发现已知追踪器"
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    style={{ marginTop: 12 }}
+                  />
+                )
               )}
             </>
           )

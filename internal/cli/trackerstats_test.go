@@ -34,6 +34,9 @@ func TestComputeTrackerBreakdown(t *testing.T) {
 	if got.Tracker != 22 { // 10+5+4+3
 		t.Errorf("Tracker=%d，期望 22", got.Tracker)
 	}
+	if !got.Loaded {
+		t.Error("有数据的归类器应 Loaded=true")
+	}
 	want := []OwnerCount{
 		{Owner: "Google", Count: 15},
 		{Owner: "comScore", Count: 4},
@@ -80,6 +83,9 @@ func TestComputeTrackerBreakdown_edges(t *testing.T) {
 		}
 		if got.Total != 6 {
 			t.Errorf("Total 仍应为 6，得 %d", got.Total)
+		}
+		if got.Loaded {
+			t.Error("nil 归类器应 Loaded=false（前端据此提示 tracker update）")
 		}
 	})
 }
