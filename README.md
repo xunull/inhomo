@@ -199,6 +199,7 @@ A superset of `record`: record connections and serve the web UI in the same proc
 | `--level` | `info` | Same as `record`. |
 | `--db` | `~/.inhomo/connections.duckdb` | Same as `record`. |
 | `--addr` | `127.0.0.1:8566` | Web listen address (loopback-only and unauthenticated by default; a non-loopback address prints a warning). |
+| `--mute-processes` | major browsers | Processes collapsed by default in the novelty view (comma-separated, case-insensitive substring match). See [Configuration](#configuration). |
 
 > Recording runs in the background; if the recording side stops (e.g. the `/logs` connection fails) the web server is shut down with it, so you never have "recording dead, web idling."
 
@@ -332,14 +333,24 @@ secret: ""
 | GET | `/api/summary` | KPI overview |
 | GET | `/api/aggregate?by=&since=&limit=` | top-N by dimension |
 | GET | `/api/timeseries?since=&bucket=` | connection count per time bucket |
+| GET | `/api/connections?offset=&limit=` | raw connection rows, newest first, with the total row count |
+| GET | `/api/flow?metric=&since=&limit=` | two-layer app→node topology (Sankey data): per-layer top-N plus an "other" bucket |
+| GET | `/api/traffic?by=&metric=&since=&limit=` | byte top-N by dimension + the slice's total up/down, from the sampled traffic records |
 | GET | `/api/trackers?since=&limit=` | tracker exposure: how many connections hit known trackers + top owners |
 | GET | `/api/exfil?since=&limit=&minUp=&minSampled=` | outbound ratio: top app-channels `(app, host)` by upload/download ratio, each row carrying its sampling coverage |
 | GET | `/api/new?since=&limit=` | novelty: app-channels seen for the first time within the window, grouped by app + observation coverage |
 | GET | `/api/new/count?since=` | novelty count (powers the dashboard KPI entry; same scope as the un-collapsed part of `/api/new`) |
 
+**Filter-slice parameters**: every endpoint above accepts `host` / `process` / `node` / `region` / `port` / `route=direct|proxied` to narrow the slice — **except `/api/new` and `/api/new/count`**, which take none of them. Novelty is judged against the *all-time* earliest connection, so a slice would shift the baseline rather than merely narrow the view (see [ADR-0014](./docs/adr/0014-novelty-by-app-channel-with-observation-coverage.md)).
+
 **Time parameter format**: `since` / `bucket` accept Go durations (`24h`, `90m`) or `7d` (days); an empty `since` means "all time."
 
-**`by` dimension allow-list**: `host` / `process` / `node` / `region` / `port` (other values return 400).
+**`by` dimension allow-lists** (other values return 400) — the two differ on purpose:
+
+- `/api/aggregate`: `host` / `process` / `node` / `region` / `port` / `rule`
+- `/api/traffic`: the same **minus `rule`** — the `traffic` table has no `rule` column, so `by=rule` is rejected up front rather than blowing up in SQL
+
+**`metric`**: `/api/traffic` takes `up` / `down` / `total` (default `total`); `/api/flow` takes those plus `count` (default `count`). `count` reads the full connection events, the byte metrics read the sampled traffic records — different datasets, see [ADR-0008](./docs/adr/0008-traffic-bytes-from-connections.md).
 
 Examples:
 
@@ -421,6 +432,8 @@ Key trade-offs are recorded in [`docs/adr/`](./docs/adr/) (the ADRs are written 
 | [0010](./docs/adr/0010-controller-autodiscovery.md) | Local mihomo auto-discovery (zero-arg connect, fall back to 9090) |
 | [0011](./docs/adr/0011-tracker-radar-classification.md) | Tracker identification: Tracker Radar fetched at runtime + in-process classification |
 | [0012](./docs/adr/0012-ai-privacy-report.md) | AI privacy report: aggregates-only, query a running serve, provider abstraction |
+| [0013](./docs/adr/0013-exfil-ratio-by-app-host-with-coverage.md) | Outbound ratio: keyed on the app-channel, every row shipping its sampling coverage |
+| [0014](./docs/adr/0014-novelty-by-app-channel-with-observation-coverage.md) | Novelty: first-appearance judged per app-channel; observation coverage inferred from connection density |
 
 Technical details of mihomo's `/logs` (format, levels, delivery semantics, retention) are in [`docs/mihomo-logs.md`](./docs/mihomo-logs.md).
 

@@ -199,6 +199,7 @@ open http://127.0.0.1:8566/
 | `--level` | `info` | 同 `record` |
 | `--db` | `~/.inhomo/connections.duckdb` | 同 `record` |
 | `--addr` | `127.0.0.1:8566` | Web 监听地址（默认仅本机、无鉴权；填非回环地址会打印警告） |
+| `--mute-processes` | 主流浏览器 | 「新增」视图里默认折叠的进程（逗号分隔、大小写不敏感的子串匹配），见[配置](#配置) |
 
 > 记录后台跑；一旦记录侧断开（如 `/logs` 连接失败），会连带关闭 Web，避免「记录已死、Web 空转」。
 
@@ -330,14 +331,24 @@ secret: ""
 | GET | `/api/summary` | KPI 概要 |
 | GET | `/api/aggregate?by=&since=&limit=` | 按维度的 top-N |
 | GET | `/api/timeseries?since=&bucket=` | 按时间桶的连接数 |
+| GET | `/api/connections?offset=&limit=` | 原始连接明细，时间倒序，附总条数 |
+| GET | `/api/flow?metric=&since=&limit=` | 两层 App→节点 拓扑（Sankey 数据）：每层 top-N + 其余归「其它」桶 |
+| GET | `/api/traffic?by=&metric=&since=&limit=` | 按维度的字节 top-N + 该切片总上/下行，取自抽样的流量记录 |
 | GET | `/api/trackers?since=&limit=` | 追踪器暴露：多少连接命中已知追踪器 + 归属公司 top-N |
 | GET | `/api/exfil?since=&limit=&minUp=&minSampled=` | 外发比：按「应用通道」(App, host) 的上行/下行比值 top-N，每行随附采样覆盖率 |
 | GET | `/api/new?since=&limit=` | 新增：窗口内首次出现的「应用通道」，按 App 归组 + 观测覆盖 |
 | GET | `/api/new/count?since=` | 新增条数（供主页 KPI 入口；口径同 `/api/new` 里未折叠的部分） |
 
+**过滤切片参数**：上表每个接口都接受 `host` / `process` / `node` / `region` / `port` / `route=direct|proxied` 来收窄切片——**唯独 `/api/new` 与 `/api/new/count` 一个都不收**。新鲜度是拿**全库最早**的那条连接做判定的，套上切片不是「收窄视野」而是「改掉判定基准」（见 [ADR-0014](./docs/adr/0014-novelty-by-app-channel-with-observation-coverage.md)）。
+
 **时间参数格式**：`since` / `bucket` 支持 Go 时长（`24h`、`90m`）或 `7d`（天）；`since` 留空表示「全部时间」。
 
-**`by` 维度白名单**：`host` / `process` / `node` / `region` / `port`（其它值返回 400）。
+**`by` 维度白名单**（其它值返回 400）——两者有意不同：
+
+- `/api/aggregate`：`host` / `process` / `node` / `region` / `port` / `rule`
+- `/api/traffic`：同上但**不含 `rule`** —— `traffic` 表没有 `rule` 列，故 `by=rule` 在白名单处就挡掉（返回 400），而不是落到不存在的列上 500
+
+**`metric`**：`/api/traffic` 取 `up` / `down` / `total`（默认 `total`）；`/api/flow` 在此之上多一个 `count`（默认 `count`）。`count` 走全量连接事件、字节度量走抽样的流量记录——两套不同数据集，见 [ADR-0008](./docs/adr/0008-traffic-bytes-from-connections.md)。
 
 示例：
 
@@ -422,6 +433,8 @@ inhomo 需要 mihomo 的 `external-controller`。两种形态都支持：
 | [0010](./docs/adr/0010-controller-autodiscovery.md) | 本机 mihomo 自动发现（零参数连上，回退 9090） |
 | [0011](./docs/adr/0011-tracker-radar-classification.md) | 追踪器识别：Tracker Radar 运行期拉取 + 进程内归类 |
 | [0012](./docs/adr/0012-ai-privacy-report.md) | AI 隐私周报：只发聚合、查运行中的 serve、provider 抽象 |
+| [0013](./docs/adr/0013-exfil-ratio-by-app-host-with-coverage.md) | 外发比：以「应用通道」为主体，并随行给出采样覆盖率 |
+| [0014](./docs/adr/0014-novelty-by-app-channel-with-observation-coverage.md) | 新鲜度：以「应用通道」判首次出现，观测覆盖从连接密度反推 |
 
 关于 mihomo `/logs` 的技术细节（格式、级别、投递语义、留存）见 [`docs/mihomo-logs.md`](./docs/mihomo-logs.md)。
 
