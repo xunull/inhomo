@@ -56,15 +56,34 @@ func Parse(data []byte) (*Classifier, error) {
 	return &Classifier{byDomain: byDomain}, nil
 }
 
-// Classify 返回 host 的追踪器归属公司及它是否为已知追踪器。按 host 的 eTLD+1 匹配；
-// 取不到 eTLD+1 的 host（IP 字面量、单标签、空）→ ("", false)。nil / 空 Classifier 对任意 host 都返回 ("", false)。
-func (c *Classifier) Classify(host string) (owner string, known bool) {
-	if c == nil || len(c.byDomain) == 0 || host == "" {
+// RegistrableDomain 返回 host 的**可注册域**（eTLD+1，见 docs/etld-plus-one.md）。
+// IP 字面量、单标签、空 host、无有效公共后缀 → ("", false)，绝不报错。
+//
+// 必须用真的公共后缀表而非「取末两段」：`github.io` 本身是公共后缀，所以
+// `myblog.github.io` 的可注册域是它自己；取末两段会得到 `github.io`，据此写出的
+// 分流规则 `DOMAIN-SUFFIX,github.io` 会误伤全部 GitHub Pages。
+//
+// 追踪器归类与「规则缺口」聚合共用它，好让「什么算一个可注册域」只有一处定义。
+func RegistrableDomain(host string) (string, bool) {
+	if host == "" {
 		return "", false
 	}
 	etld1, err := publicsuffix.EffectiveTLDPlusOne(strings.ToLower(host))
 	if err != nil {
-		return "", false // IP / 单标签 / 无有效后缀 → 未知，绝不报错
+		return "", false
+	}
+	return etld1, true
+}
+
+// Classify 返回 host 的追踪器归属公司及它是否为已知追踪器。按 host 的可注册域匹配；
+// 取不到可注册域的 host（IP 字面量、单标签、空）→ ("", false)。nil / 空 Classifier 对任意 host 都返回 ("", false)。
+func (c *Classifier) Classify(host string) (owner string, known bool) {
+	if c == nil || len(c.byDomain) == 0 {
+		return "", false
+	}
+	etld1, ok := RegistrableDomain(host)
+	if !ok {
+		return "", false
 	}
 	owner, known = c.byDomain[etld1]
 	return owner, known

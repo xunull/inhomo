@@ -819,3 +819,88 @@ func (s *Store) CountNewChannels(since time.Duration, excludeProcesses []string)
 	err := s.DB().QueryRow(q, args...).Scan(&n)
 	return n, err
 }
+
+// 「兜底连接」与「未经规则匹配」的 SQL 谓词（见 CONTEXT 同名术语）——单一事实源，
+// 供 Fallthrough 的两条子查询共用，避免口径在两处逐字漂移。
+//
+// sqlFallthrough：落到规则集末尾的兜底规则（mihomo 记作 Match / FINAL），
+// 或规则集里连兜底都没有（记作 doesn't match any rule）。这两种补规则都有用。
+//
+// sqlBypassed：GLOBAL 模式 / specialProxy——日志根本没有 match 段，rule 存空串。
+// 它们**不是**兜底连接：那些模式下规则压根不生效，补了也没用；若混进清单，
+// GLOBAL 模式下会把「该补规则的域名」变成「你的全部域名」。故单独计数、单独提示。
+const (
+	sqlFallthrough = "(rule IN ('Match', 'FINAL') OR rule ILIKE '%match any rule%')"
+	sqlBypassed    = "rule = ''"
+)
+
+// FallthroughHost 是一个目的 host 的兜底汇总。Bytes 来自**抽样**的流量记录、按 host 关联
+// （traffic 表没有 rule 列，见 ADR-0008），实测 99.99% 的兜底连接来自「只以兜底形式出现」
+// 的 host，故偏差可忽略——但这条前提要在页面上讲明。
+type FallthroughHost struct {
+	Host   string    `json:"host"`
+	Conns  int64     `json:"conns"`
+	Bytes  int64     `json:"bytes"`
+	LastTS time.Time `json:"lastTs"` // 最后一次兜底的时刻：判断这条缺口是否还新鲜
+}
+
+// FallthroughStats 是 Fallthrough 的返回：兜底 host 明细 + 未经规则匹配的连接数。
+type FallthroughStats struct {
+	Hosts    []FallthroughHost `json:"hosts"`
+	Bypassed int64             `json:"bypassed"` // GLOBAL / specialProxy，补规则对其无效
+}
+
+// Fallthrough 取最近 since 内的「兜底连接」，按目的 host 聚合（连接数 / 字节 / 最后兜底时刻），
+// 并另行给出同窗口内「未经规则匹配」的连接数。since<=0 表示不限时间（全部历史）。
+//
+// 这里**不做**可注册域折叠：DuckDB 没有公共后缀函数，折叠须在 Go 侧用 publicsuffix 完成
+// （同 HostCounts 供追踪器归类的既有路子）。故返回逐 host 明细，由调用方归组成「规则缺口」。
+// 排序也留给调用方——最终按字节排序要在折叠**之后**才有意义。
+func (s *Store) Fallthrough(since time.Duration) (FallthroughStats, error) {
+	// 时间条件在两张表上分别用各自的时间列；since<=0 则整体不限时间。
+	// 两条查询的参数分开备好——主查询有两个占位符（fb 的 ts、t 的 start_ts，按此顺序），
+	// bypassed 计数有一个。显式分组比按下标切片可靠：占位符增减时不会悄悄错位。
+	connWhere, trafWhere := "", ""
+	var mainArgs, bypArgs []any
+	if since > 0 {
+		cutoff := time.Now().Add(-since)
+		connWhere = " AND ts >= ?"
+		trafWhere = " WHERE start_ts >= ?"
+		mainArgs = []any{cutoff, cutoff}
+		bypArgs = []any{cutoff}
+	}
+
+	out := FallthroughStats{Hosts: []FallthroughHost{}}
+	q := `WITH fb AS (
+			SELECT host, count(*) AS conns, max(ts) AS last_ts
+			FROM connections WHERE ` + sqlFallthrough + connWhere + ` GROUP BY 1
+		), t AS (
+			SELECT host, sum(up_bytes + down_bytes) AS bytes FROM traffic` + trafWhere + ` GROUP BY 1
+		)
+		SELECT fb.host, fb.conns, COALESCE(t.bytes, 0), fb.last_ts
+		FROM fb LEFT JOIN t ON t.host = fb.host
+		ORDER BY fb.conns DESC, fb.host`
+	rows, err := s.DB().Query(q, mainArgs...)
+	if err != nil {
+		return FallthroughStats{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h FallthroughHost
+		if err := rows.Scan(&h.Host, &h.Conns, &h.Bytes, &h.LastTS); err != nil {
+			return FallthroughStats{}, err
+		}
+		out.Hosts = append(out.Hosts, h)
+	}
+	if err := rows.Err(); err != nil {
+		return FallthroughStats{}, err
+	}
+
+	// 未经规则匹配的连接数（GLOBAL / specialProxy）——不进清单，只用于页顶提示。
+	if err := s.DB().QueryRow(
+		`SELECT count(*) FROM connections WHERE `+sqlBypassed+connWhere, bypArgs...,
+	).Scan(&out.Bypassed); err != nil {
+		return FallthroughStats{}, err
+	}
+	return out, nil
+}

@@ -62,8 +62,8 @@ func TestStore_traffic(t *testing.T) {
 
 	s := seedTraffic(t, []TrafficRecord{
 		mk("a.com", "🇺🇸US", "US", 100, 1000, 0),
-		mk("a.com", "🇺🇸US", "US", 50, 500, 0), // a.com 合计 up150 down1500
-		mk("b.com", "🇭🇰HK", "HK", 900, 200, 0), // b.com up900 down200
+		mk("a.com", "🇺🇸US", "US", 50, 500, 0),                 // a.com 合计 up150 down1500
+		mk("b.com", "🇭🇰HK", "HK", 900, 200, 0),                // b.com up900 down200
 		mk("c.com", "DIRECT", "unknown", 10, 10, 2*time.Hour), // 2h 前
 	})
 
@@ -814,7 +814,7 @@ func TestStore_newChannels(t *testing.T) {
 	if c := got["D→plain.com"]; !c.Plaintext || !c.Proxied {
 		t.Errorf("D→plain.com 应同时标明文与经出境节点，得 %+v", c)
 	}
-	if c := got["A→new.com"]; c.FirstTS.After(now.Add(-90*time.Minute)) {
+	if c := got["A→new.com"]; c.FirstTS.After(now.Add(-90 * time.Minute)) {
 		t.Errorf("A→new.com 首次时刻应是 2h 前那条（取最早），得 %v", c.FirstTS)
 	}
 
@@ -896,5 +896,92 @@ func TestStore_coverage(t *testing.T) {
 	}
 	if len(cov.Gaps) != 0 {
 		t.Errorf("连续三小时不应有空洞，得 %+v", cov.Gaps)
+	}
+}
+
+// TestStore_fallthrough 覆盖「兜底连接」口径与聚合：Match/FINAL/doesn't match any rule 都算、
+// 空串（GLOBAL/specialProxy）单独计数不进清单、字节按 host 关联 traffic、最后兜底时刻、时间窗、空库。
+func TestStore_fallthrough(t *testing.T) {
+	now := time.Now()
+	ev := func(host, rule string, ago time.Duration) Event {
+		return Event{
+			TS: now.Add(-ago), Process: "p", Network: "tcp",
+			Host: host, Port: 443, Rule: rule, Node: "n", Region: "hk",
+		}
+	}
+	rec := func(host string, up, down int64) TrafficRecord {
+		return TrafficRecord{
+			Start: now, Process: "p", Network: "tcp", Host: host, Port: 443,
+			Node: "n", Region: "hk", UpBytes: up, DownBytes: down, DurationMs: 1000,
+		}
+	}
+
+	// 空库：空切片（非 nil）、bypassed 0、不报错。
+	if fb, err := seedBoth(t, nil, nil).Fallthrough(0); err != nil || fb.Hosts == nil || len(fb.Hosts) != 0 || fb.Bypassed != 0 {
+		t.Fatalf("空库应返回空清单，得 %+v（err %v）", fb, err)
+	}
+
+	s := seedBoth(t, []Event{
+		// 三种兜底形态都要进清单。
+		ev("a.com", "Match", time.Hour),
+		ev("a.com", "Match", 2*time.Hour),
+		ev("b.com", "FINAL", time.Hour),
+		ev("c.com", "doesn't match any rule", time.Hour),
+		// 命中具体规则 → 不算兜底。
+		ev("d.com", "DomainSuffix(d.com)", time.Hour),
+		// 空串 = GLOBAL/specialProxy，没走规则匹配 → 不进清单，只计数。
+		ev("e.com", "", time.Hour),
+		ev("f.com", "", time.Hour),
+		// 窗口外的兜底（用于时间窗用例）。
+		ev("old.com", "Match", 48*time.Hour),
+	}, []TrafficRecord{
+		rec("a.com", 100, 900), // 合计 1000 字节
+		rec("d.com", 500, 500), // 命中规则的 host 的字节不该出现在结果里
+	})
+
+	fb, err := s.Fallthrough(0) // 全部历史
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]FallthroughHost{}
+	for _, h := range fb.Hosts {
+		got[h.Host] = h
+	}
+	for _, want := range []string{"a.com", "b.com", "c.com", "old.com"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("%s 应算兜底连接，却不在清单里", want)
+		}
+	}
+	for _, unwanted := range []string{"d.com", "e.com", "f.com"} {
+		if _, ok := got[unwanted]; ok {
+			t.Errorf("%s 不该进兜底清单（命中具体规则 / 未经规则匹配）", unwanted)
+		}
+	}
+	if fb.Bypassed != 2 {
+		t.Errorf("未经规则匹配的连接应为 2 条（e.com/f.com），得 %d", fb.Bypassed)
+	}
+	if a := got["a.com"]; a.Conns != 2 || a.Bytes != 1000 {
+		t.Errorf("a.com 应为 2 条连接、1000 字节（按 host 关联 traffic），得 conns=%d bytes=%d", a.Conns, a.Bytes)
+	}
+	if b := got["b.com"]; b.Bytes != 0 {
+		t.Errorf("无流量记录的 host 字节应为 0，得 %d", b.Bytes)
+	}
+	// 最后兜底时刻取最晚的那条（a.com 的两条分别是 1h / 2h 前）。
+	if a := got["a.com"]; a.LastTS.Before(now.Add(-90 * time.Minute)) {
+		t.Errorf("a.com 的最后兜底时刻应是 1h 前那条，得 %v", a.LastTS)
+	}
+
+	// 时间窗：24h 内不含 48h 前的 old.com。
+	fb, err = s.Fallthrough(24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range fb.Hosts {
+		if h.Host == "old.com" {
+			t.Error("old.com 在 24h 窗外，不该出现")
+		}
+	}
+	if len(fb.Hosts) != 3 {
+		t.Errorf("24h 窗内应有 3 个兜底 host，得 %d：%+v", len(fb.Hosts), fb.Hosts)
 	}
 }

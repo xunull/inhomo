@@ -7,6 +7,7 @@ import DetailPage from './components/DetailPage'
 import DimensionOverview from './components/DimensionOverview'
 import TrafficPage from './components/TrafficPage'
 import NewPage from './components/NewPage'
+import GapsPage from './components/GapsPage'
 
 // 拓扑页懒加载：echarts 随它单独成 chunk，不进主仪表盘首屏包。
 const TopologyPage = lazy(() => import('./components/TopologyPage'))
@@ -35,6 +36,8 @@ export default function App() {
             <Route path="/traffic" element={<TrafficPage />} />
             {/* /new 自带时间窗，不接过滤切片——首次出现要拿窗口外历史当参照系。 */}
             <Route path="/new" element={<NewPage />} />
+            {/* /gaps 同样不接切片——规则是全局配置，不分切片。 */}
+            <Route path="/gaps" element={<GapsPage />} />
             <Route
               path="/topology"
               element={

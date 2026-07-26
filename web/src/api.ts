@@ -372,6 +372,58 @@ export const getNewChannels = (since = '24h', limit = 0) =>
 export const getNewCount = (since = '24h') =>
   getJSON<{ count: number }>('/api/new/count' + qs(EMPTY_FILTER, { since }))
 
+// FallthroughHost 是一个兜底目的 host 的汇总（bytes 来自抽样的流量记录、按 host 关联）。
+export interface FallthroughHost {
+  host: string
+  conns: number
+  bytes: number
+  lastTs: string
+}
+
+// RuleGap 是一条「规则缺口」（见 CONTEXT 术语）：一个可注册域 + 它的兜底汇总，
+// 也就是**一条待补的分流规则**。hosts 是其下的具体子域，供展开核实覆盖面。
+export interface RuleGap {
+  domain: string
+  conns: number
+  bytes: number
+  lastTs: string
+  hosts: FallthroughHost[]
+}
+
+// GapsResp：totalConns/totalBytes 的分母**含 IP 目标区**，所以域名清单的累计覆盖
+// 到底也不会满 100%——差额正是 IP 区那部分。
+export interface GapsResp {
+  gaps: RuleGap[]
+  ipTargets: FallthroughHost[]
+  bypassed: number // GLOBAL / specialProxy：未经规则匹配，补规则对其无效
+  totalConns: number
+  totalBytes: number
+}
+
+// GAP_WINDOWS：规则缺口视图自带的时间窗。默认 7 天而非全部——
+// 早已补过规则的域名会一直留在历史里，全时段会把清单变成「历史上所有缺口的并集」。
+export const GAP_WINDOWS: { value: string; label: string }[] = [
+  { value: '24h', label: '近 24 小时' },
+  { value: '7d', label: '近 7 天' },
+  { value: '30d', label: '近 30 天' },
+  { value: '', label: '全部时间' },
+]
+
+// getGaps：不带过滤切片——规则是全局配置，不分切片。
+export const getGaps = (since = '7d') => getJSON<GapsResp>('/api/gaps' + qs(EMPTY_FILTER, { since }))
+
+// ruleSnippet：把一条缺口/目标转成可粘贴的规则片段。
+// 策略组名 inhomo 拿不到（detect.go 的 effectiveNode 在解析时就把分组名剥掉了，
+// 见 ADR-0015），故留占位符由用户自行替换。
+export const RULE_GROUP_PLACEHOLDER = '<策略组>'
+export const domainRule = (domain: string) => `  - DOMAIN-SUFFIX,${domain},${RULE_GROUP_PLACEHOLDER}`
+// IP 目标写不了域名规则；v1 只给单地址形态（/32、/128），不推断掩码。
+export const ipRule = (host: string) => {
+  const bare = host.replace(/^\[|\]$/g, '')
+  const isV6 = bare.includes(':')
+  return `  - IP-CIDR${isV6 ? '6' : ''},${bare}/${isV6 ? 128 : 32},${RULE_GROUP_PLACEHOLDER},no-resolve`
+}
+
 // TIME_WINDOWS：流量 / 拓扑等页面共用的时间窗选项（Dashboard 另有含 bucket 的变体，故不共用那个）。
 export const TIME_WINDOWS: { value: string; label: string }[] = [
   { value: '1h', label: '近 1 小时' },

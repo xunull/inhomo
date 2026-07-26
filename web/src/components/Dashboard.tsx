@@ -76,6 +76,8 @@ export default function Dashboard({
           {/* 主页 → 全量；详情页（filter 非空）→ 当前切片。带当前时间窗。 */}
           <Link to={trafficPath(filter, since)}>流量 →</Link>
           <Link to={topologyPath(filter, since)}>流量拓扑 →</Link>
+          {/* 规则缺口不接过滤切片（规则是全局配置），故不带 filter/since 参数。 */}
+          <Link to="/gaps">规则缺口 →</Link>
         </Space>
         <Space>
           <Switch checked={auto} onChange={setAuto} checkedChildren="自动" unCheckedChildren="手动" />

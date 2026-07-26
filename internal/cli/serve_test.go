@@ -162,3 +162,68 @@ func TestGroupNewChannels(t *testing.T) {
 		t.Errorf("nil classifier 时仍应正常归组，得 %+v", g)
 	}
 }
+
+// TestGroupRuleGaps 覆盖「规则缺口」折叠：按可注册域归组、IP 字面量另行成组、
+// 按字节降序（而非连接数）、组内保留子域明细。
+func TestGroupRuleGaps(t *testing.T) {
+	now := time.Now()
+	h := func(host string, conns, bytes int64, ago time.Duration) store.FallthroughHost {
+		return store.FallthroughHost{Host: host, Conns: conns, Bytes: bytes, LastTS: now.Add(-ago)}
+	}
+
+	gaps, ips := groupRuleGaps([]store.FallthroughHost{
+		// 同一可注册域下的两个子域 → 合成一条缺口（1100 字节 / 12 条）。
+		h("api.example.com", 10, 1000, time.Hour),
+		h("cdn.example.com", 2, 100, 3*time.Hour),
+		// 连接数少但字节大 → 必须排在上面（这正是默认按字节排序的理由）。
+		h("dl.big.net", 3, 9000, 2*time.Hour),
+		// 连接数最多但字节最少 → 排最后。
+		h("telemetry.small.org", 500, 5, time.Hour),
+		// 取不到可注册域 → IP 目标区，写不了 DOMAIN-SUFFIX。
+		h("192.0.2.1", 7, 0, time.Hour),
+		h("[2620:149:af6::10]", 4, 0, time.Hour),
+	})
+
+	if len(gaps) != 3 {
+		t.Fatalf("应折叠成 3 条规则缺口，得 %d：%+v", len(gaps), gaps)
+	}
+	wantOrder := []string{"big.net", "example.com", "small.org"}
+	for i, w := range wantOrder {
+		if gaps[i].Domain != w {
+			t.Errorf("第 %d 条缺口应为 %s（按字节降序），得 %s", i, w, gaps[i].Domain)
+		}
+	}
+
+	var ex ruleGap
+	for _, g := range gaps {
+		if g.Domain == "example.com" {
+			ex = g
+		}
+	}
+	if ex.Conns != 12 || ex.Bytes != 1100 {
+		t.Errorf("example.com 应汇总为 12 条 / 1100 字节，得 %d / %d", ex.Conns, ex.Bytes)
+	}
+	if len(ex.Hosts) != 2 {
+		t.Fatalf("example.com 应保留 2 个子域供展开，得 %d", len(ex.Hosts))
+	}
+	if ex.Hosts[0].Host != "api.example.com" {
+		t.Errorf("组内子域也按字节降序，首个应为 api.example.com，得 %s", ex.Hosts[0].Host)
+	}
+	// 组的「最后兜底」取组内最晚的一次（1h 前那条，而非 3h 前）。
+	if ex.LastTS.Before(now.Add(-2 * time.Hour)) {
+		t.Errorf("组的最后兜底时刻应取组内最晚，得 %v", ex.LastTS)
+	}
+
+	if len(ips) != 2 {
+		t.Fatalf("两个 IP 字面量应归入 IP 目标区，得 %d：%+v", len(ips), ips)
+	}
+	if ips[0].Host != "192.0.2.1" {
+		t.Errorf("IP 区按连接数降序（字节同为 0），首个应为 192.0.2.1，得 %s", ips[0].Host)
+	}
+
+	// 空输入 → 两个空切片（非 nil，JSON 为 []）。
+	g2, i2 := groupRuleGaps(nil)
+	if g2 == nil || len(g2) != 0 || i2 == nil || len(i2) != 0 {
+		t.Errorf("空输入应得两个空切片，得 %+v / %+v", g2, i2)
+	}
+}

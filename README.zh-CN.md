@@ -338,8 +338,9 @@ secret: ""
 | GET | `/api/exfil?since=&limit=&minUp=&minSampled=` | 外发比：按「应用通道」(App, host) 的上行/下行比值 top-N，每行随附采样覆盖率 |
 | GET | `/api/new?since=&limit=` | 新增：窗口内首次出现的「应用通道」，按 App 归组 + 观测覆盖 |
 | GET | `/api/new/count?since=` | 新增条数（供主页 KPI 入口；口径同 `/api/new` 里未折叠的部分） |
+| GET | `/api/gaps?since=` | 规则缺口：兜底连接按可注册域折叠，一行即一条待补的分流规则 |
 
-**过滤切片参数**：上表每个接口都接受 `host` / `process` / `node` / `region` / `port` / `route=direct|proxied` 来收窄切片——**唯独 `/api/new` 与 `/api/new/count` 一个都不收**。新鲜度是拿**全库最早**的那条连接做判定的，套上切片不是「收窄视野」而是「改掉判定基准」（见 [ADR-0014](./docs/adr/0014-novelty-by-app-channel-with-observation-coverage.md)）。
+**过滤切片参数**：上表每个接口都接受 `host` / `process` / `node` / `region` / `port` / `route=direct|proxied` 来收窄切片——**唯独 `/api/new`、`/api/new/count` 与 `/api/gaps` 一个都不收**。新鲜度是拿**全库最早**的那条连接做判定的，套上切片不是「收窄视野」而是「改掉判定基准」（见 [ADR-0014](./docs/adr/0014-novelty-by-app-channel-with-observation-coverage.md)）。
 
 **时间参数格式**：`since` / `bucket` 支持 Go 时长（`24h`、`90m`）或 `7d`（天）；`since` 留空表示「全部时间」。
 
@@ -372,6 +373,8 @@ curl 'http://127.0.0.1:8566/api/exfil?since=7d&limit=2'
 ```
 
 `new` 字段口径：一条「新增应用通道」= 该 `(App, host)` 在**全库历史**中的最早连接恰好落在窗口内——即「这个 App 开始联系一个它以前不联系的地方」。判定用的是全库最早时刻而非窗口内最早时刻，因此它**不接受过滤切片**（切片只会缩小可见范围，套上去会让判定基准漂移）。`coverage` 是「观测覆盖」：库中确实在记录的时间范围与空洞，由「某小时桶零连接」反推——**中断期间出现过的通道，恢复记录后会被误报为新**，所以结论与它的证据基础一并返回。`muted` 标记「用户指定目的地的进程」（默认为主流浏览器，见 `--mute-processes`）：它们的新域名是你自己点出来的，默认折叠但**保留**。`proxied`/`plaintext`/`tracker` 是徽章，只标不滤。
+
+`gaps` 字段口径：一条「规则缺口」= 一个**可注册域** + 它的「兜底连接」汇总，即一条待补的分流规则。「兜底连接」指没被任何**具体**规则命中的连接——落到规则集末尾的兜底规则（`Match`/`FINAL`），或规则集连兜底都没有（`doesn't match any rule`）；**不含** GLOBAL 模式与 specialProxy（`rule` 为空串），那些压根没走规则匹配、补规则不生效，改由 `bypassed` 单独计数。折叠用真的公共后缀表（`myblog.github.io` 的可注册域是它自己，不是 `github.io`）；取不到可注册域的 IP 字面量归入 `ipTargets`。缺口按**字节**降序而非连接数——一个走代理下了 1 GB 的域名比几千条遥测小连接更该补规则；字节来自抽样的流量记录、按 host 关联（`traffic` 表无 `rule` 列，见 ADR-0008）。`totalConns`/`totalBytes` 的分母含 `ipTargets`，故域名清单的累计覆盖到底也不满 100%，差额正是 IP 区。
 
 `exfil` 字段口径：`ratio` = `上行 / max(下行, 1)`，排的是**方向性**而非流量大小——所以永远进不了字节 top-N 的埋点/上报类通道会在这里浮出来。`sampled` / `logged` 是采样覆盖率的原始分子分母（抽样的 `traffic` 表行数 / 全量的 `connections` 表行数）：覆盖率低意味着该通道多数连接根本没有字节账，这个比值只是少数长连接的账。门槛 `minUp`（默认 5 MB）与 `minSampled`（默认 10）挡的是小样本噪音；低覆盖率**只披露、不隐式过滤**。
 
@@ -435,6 +438,7 @@ inhomo 需要 mihomo 的 `external-controller`。两种形态都支持：
 | [0012](./docs/adr/0012-ai-privacy-report.md) | AI 隐私周报：只发聚合、查运行中的 serve、provider 抽象 |
 | [0013](./docs/adr/0013-exfil-ratio-by-app-host-with-coverage.md) | 外发比：以「应用通道」为主体，并随行给出采样覆盖率 |
 | [0014](./docs/adr/0014-novelty-by-app-channel-with-observation-coverage.md) | 新鲜度：以「应用通道」判首次出现，观测覆盖从连接密度反推 |
+| [0015](./docs/adr/0015-rule-gaps-by-registrable-domain.md) | 规则缺口：按可注册域聚合兜底连接，做成「补规则」工作台 |
 
 关于 mihomo `/logs` 的技术细节（格式、级别、投递语义、留存）见 [`docs/mihomo-logs.md`](./docs/mihomo-logs.md)。
 

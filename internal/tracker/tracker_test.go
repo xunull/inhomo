@@ -132,3 +132,31 @@ func TestFetch(t *testing.T) {
 		}
 	})
 }
+
+// TestRegistrableDomain 钉住可注册域的取值行为——「规则缺口」的折叠与追踪器归类共用它。
+// 最关键的一条是公共后缀：myblog.github.io 的可注册域是它自己，若退化成「取末两段」
+// 会得到 github.io，据此写出的 DOMAIN-SUFFIX 规则会误伤全部 GitHub Pages（见 ADR-0015）。
+func TestRegistrableDomain(t *testing.T) {
+	ok := map[string]string{
+		"api.anthropic.com":        "anthropic.com",
+		"a.b.google-analytics.com": "google-analytics.com",
+		"anthropic.com":            "anthropic.com",
+		"www.bbc.co.uk":            "bbc.co.uk",        // 多段公共后缀，不是 co.uk
+		"myblog.github.io":         "myblog.github.io", // github.io 本身是公共后缀
+		"API.Anthropic.COM":        "anthropic.com",    // 大小写不敏感
+	}
+	for host, want := range ok {
+		got, isOK := RegistrableDomain(host)
+		if !isOK || got != want {
+			t.Errorf("RegistrableDomain(%q) = (%q,%v)，应为 (%q,true)", host, got, isOK, want)
+		}
+	}
+
+	// 取不到可注册域的：IP 字面量、单标签、空。它们在「规则缺口」里另行成组——
+	// 写不了域名规则（要写是 IP-CIDR）。
+	for _, host := range []string{"192.0.2.1", "[2620:149:af6::10]", "2620:149:af6::10", "localhost", ""} {
+		if got, isOK := RegistrableDomain(host); isOK {
+			t.Errorf("RegistrableDomain(%q) 应取不到可注册域，得 %q", host, got)
+		}
+	}
+}

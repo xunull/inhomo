@@ -340,8 +340,9 @@ secret: ""
 | GET | `/api/exfil?since=&limit=&minUp=&minSampled=` | outbound ratio: top app-channels `(app, host)` by upload/download ratio, each row carrying its sampling coverage |
 | GET | `/api/new?since=&limit=` | novelty: app-channels seen for the first time within the window, grouped by app + observation coverage |
 | GET | `/api/new/count?since=` | novelty count (powers the dashboard KPI entry; same scope as the un-collapsed part of `/api/new`) |
+| GET | `/api/gaps?since=` | rule gaps: fallthrough connections folded by registrable domain — one row is one routing rule you have yet to write |
 
-**Filter-slice parameters**: every endpoint above accepts `host` / `process` / `node` / `region` / `port` / `route=direct|proxied` to narrow the slice — **except `/api/new` and `/api/new/count`**, which take none of them. Novelty is judged against the *all-time* earliest connection, so a slice would shift the baseline rather than merely narrow the view (see [ADR-0014](./docs/adr/0014-novelty-by-app-channel-with-observation-coverage.md)).
+**Filter-slice parameters**: every endpoint above accepts `host` / `process` / `node` / `region` / `port` / `route=direct|proxied` to narrow the slice — **except `/api/new`, `/api/new/count` and `/api/gaps`**, which take none of them. Novelty is judged against the *all-time* earliest connection, so a slice would shift the baseline rather than merely narrow the view (see [ADR-0014](./docs/adr/0014-novelty-by-app-channel-with-observation-coverage.md)).
 
 **Time parameter format**: `since` / `bucket` accept Go durations (`24h`, `90m`) or `7d` (days); an empty `since` means "all time."
 
@@ -371,6 +372,8 @@ curl 'http://127.0.0.1:8566/api/exfil?since=7d&limit=2'
 ```
 
 `new` field semantics: a new app-channel means that `(app, host)` pair's earliest connection *in the whole database* falls inside the window — i.e. "this app started talking to somewhere it never talked to before." The baseline is the all-time minimum, not the in-window minimum, which is why this endpoint **takes no filter slice** (a slice only narrows what is visible, and applying one would shift the baseline itself). `coverage` is the observation coverage: the time ranges actually being recorded plus their gaps, inferred from hours that have zero connections — **channels that appeared while recording was down get misreported as new once it resumes**, so the conclusion ships with its evidence base. `muted` marks "processes whose destination the user picks" (major browsers by default, see `--mute-processes`): their new domains are the result of your own clicks, so they are collapsed by default but never dropped. `proxied` / `plaintext` / `tracker` are badges — labelled, never used as filters.
+
+`gaps` field semantics: one rule gap is a **registrable domain** plus the fallthrough connections under it — i.e. one routing rule you have yet to write. A fallthrough connection is one that no **specific** rule matched: it landed on the catch-all at the end of the rule set (`Match`/`FINAL`), or the rule set had no catch-all at all (`doesn't match any rule`). It **excludes** GLOBAL mode and specialProxy (empty `rule`) — those never went through rule matching at all, so writing a rule would not help; they are counted separately as `bypassed`. Folding uses the real public suffix list (`myblog.github.io` is its own registrable domain, not `github.io`); targets with no registrable domain — IP literals — go to `ipTargets`. Gaps are sorted by **bytes**, not connection count: a domain that pulled 1 GB through the proxy deserves a rule more than thousands of tiny telemetry connections. Bytes come from the sampled traffic records, joined by host (the `traffic` table has no `rule` column, see ADR-0008). `totalConns`/`totalBytes` include `ipTargets` in the denominator, so the domain list's cumulative coverage never quite reaches 100% — the remainder is exactly the IP section.
 
 `exfil` field semantics: `ratio` = `up / max(down, 1)` — sorts by *direction*, not volume, so telemetry channels that never make the byte-size top-N surface here. `sampled` / `logged` are the raw numerator and denominator of the sampling coverage (rows in the sampled `traffic` table vs rows in the full `connections` table): a low ratio means most of that channel's connections have no byte accounting, so the number is only the accounting of a few long-lived connections. Thresholds `minUp` (default 5 MB) and `minSampled` (default 10) block small-sample noise; low coverage is *disclosed, never silently filtered*.
 
@@ -434,6 +437,7 @@ Key trade-offs are recorded in [`docs/adr/`](./docs/adr/) (the ADRs are written 
 | [0012](./docs/adr/0012-ai-privacy-report.md) | AI privacy report: aggregates-only, query a running serve, provider abstraction |
 | [0013](./docs/adr/0013-exfil-ratio-by-app-host-with-coverage.md) | Outbound ratio: keyed on the app-channel, every row shipping its sampling coverage |
 | [0014](./docs/adr/0014-novelty-by-app-channel-with-observation-coverage.md) | Novelty: first-appearance judged per app-channel; observation coverage inferred from connection density |
+| [0015](./docs/adr/0015-rule-gaps-by-registrable-domain.md) | Rule gaps: fallthrough connections aggregated by registrable domain, as a rule-writing workbench |
 
 Technical details of mihomo's `/logs` (format, levels, delivery semantics, retention) are in [`docs/mihomo-logs.md`](./docs/mihomo-logs.md).
 

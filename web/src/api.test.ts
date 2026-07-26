@@ -17,6 +17,10 @@ import {
   isByteMetric,
   isFilterable,
   FILTER_DIMS,
+  domainRule,
+  ipRule,
+  RULE_GROUP_PLACEHOLDER,
+  GAP_WINDOWS,
   type AggDimension,
   type ExfilRow,
   coverageOf,
@@ -278,5 +282,38 @@ describe('isFilterable（可聚合 ≠ 可过滤：杜绝把规则当过滤条�
 
   it('FILTER_DIMS 不含 rule（维度总览页 /d/:dim 据此拒绝 /d/rule）', () => {
     expect(FILTER_DIMS.some((d) => (d.key as AggDimension) === 'rule')).toBe(false)
+  })
+})
+
+describe('规则片段生成（「补规则工作台」的产出）', () => {
+  it('域名 → DOMAIN-SUFFIX，策略组留占位符', () => {
+    // inhomo 拿不到策略组名（detect.go 的 effectiveNode 在解析时剥掉了分组名，见 ADR-0015），
+    // 所以片段必须留占位符而非编一个——粘进去直接生效的假规则比留空更危险。
+    expect(domainRule('anthropic.com')).toBe(`  - DOMAIN-SUFFIX,anthropic.com,${RULE_GROUP_PLACEHOLDER}`)
+  })
+
+  it('IPv4 → IP-CIDR /32', () => {
+    expect(ipRule('192.0.2.1')).toBe(`  - IP-CIDR,192.0.2.1/32,${RULE_GROUP_PLACEHOLDER},no-resolve`)
+  })
+
+  it('IPv6 → IP-CIDR6 /128，且**去掉方括号**', () => {
+    // 库里的 IPv6 host 带方括号（如 [2620:149:af6::10]），照原样写进规则是无效语法。
+    expect(ipRule('[2620:149:af6::10]')).toBe(
+      `  - IP-CIDR6,2620:149:af6::10/128,${RULE_GROUP_PLACEHOLDER},no-resolve`,
+    )
+  })
+
+  it('不带方括号的 IPv6 同样处理', () => {
+    expect(ipRule('2620:149:af6::10')).toContain('IP-CIDR6,2620:149:af6::10/128')
+  })
+})
+
+describe('GAP_WINDOWS（规则缺口的时间窗）', () => {
+  it('默认档位含「全部时间」（空串）', () => {
+    expect(GAP_WINDOWS.some((w) => w.value === '')).toBe(true)
+  })
+
+  it('7d 在列表里——它是默认档，早补过规则的域名不该被全时段翻出来', () => {
+    expect(GAP_WINDOWS.map((w) => w.value)).toContain('7d')
   })
 })

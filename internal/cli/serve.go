@@ -325,6 +325,28 @@ func registerRoutes(app *fiber.App, st *store.Store, classifier *tracker.Classif
 		return c.JSON(fiber.Map{"count": n})
 	})
 
+	// /api/gaps?since= —— 「规则缺口」：兜底连接按可注册域折叠，一行即一条待补的分流规则。
+	// 不收过滤切片：这页是「我该先补哪几条规则」的工作台，规则是全局配置、不分切片。
+	// since 空 = 全部历史（页面默认传 7d：早已补过规则的域名会一直留在历史里）。
+	app.Get("/api/gaps", func(c *fiber.Ctx) error {
+		since, err := parseDur(c.Query("since"))
+		if err != nil {
+			return badReq(c, err)
+		}
+		fb, err := st.Fallthrough(since)
+		if err != nil {
+			return svrErr(c, err)
+		}
+		gaps, ips := groupRuleGaps(fb.Hosts)
+		resp := gapsResponse{Gaps: gaps, IPTargets: ips, Bypassed: fb.Bypassed}
+		// 累计覆盖的分母含 IP 目标——域名清单累计不到 100%，差额正是 IP 区，如实呈现。
+		for _, h := range fb.Hosts {
+			resp.TotalConns += h.Conns
+			resp.TotalBytes += h.Bytes
+		}
+		return c.JSON(resp)
+	})
+
 	// /api/new?since=&limit= —— 时间窗内「首次出现」的应用通道，按 App 归组 + 观测覆盖。
 	// **不收过滤切片**（见 CONTEXT「过滤切片」的边界）：首次出现要拿窗口外的历史当参照系，
 	// 而切片只会缩小可见范围，套上去会让 min(ts) 漂移成「在该切片内首次出现的时刻」。
@@ -427,4 +449,81 @@ func groupNewChannels(chs []store.NewChannel, muted []string, cl *tracker.Classi
 		return groups[a].Count > groups[b].Count
 	})
 	return groups
+}
+
+// ruleGap 是一条「规则缺口」（见 CONTEXT 术语）：一个可注册域 + 它的兜底汇总 = 一条待补的分流规则。
+// Hosts 保留其下的具体子域，供前端展开——写宽泛规则前得能核实它到底盖住了什么。
+type ruleGap struct {
+	Domain string                  `json:"domain"`
+	Conns  int64                   `json:"conns"`
+	Bytes  int64                   `json:"bytes"`
+	LastTS time.Time               `json:"lastTs"`
+	Hosts  []store.FallthroughHost `json:"hosts"`
+}
+
+// gapsResponse 是 /api/gaps 的返回。
+// Total* 是**全部**兜底连接（含 IP 目标）的合计，供前端算「累计覆盖」——分母含 IP 区，
+// 故域名列表的累计值到底也不会满 100%，剩下的正是 IP 区那部分，这是诚实的。
+type gapsResponse struct {
+	Gaps       []ruleGap               `json:"gaps"`
+	IPTargets  []store.FallthroughHost `json:"ipTargets"`
+	Bypassed   int64                   `json:"bypassed"`
+	TotalConns int64                   `json:"totalConns"`
+	TotalBytes int64                   `json:"totalBytes"`
+}
+
+// groupRuleGaps 把逐 host 的兜底明细折叠成「规则缺口」：按可注册域归组，
+// 取不到可注册域的（IP 字面量、单标签）单独归入 IP 目标——它们写不了域名规则。
+//
+// 折叠必须在 Go 侧：DuckDB 没有公共后缀函数（同 HostCounts 供追踪器归类的既有路子）。
+// 排序也在折叠之后才有意义：按字节降序，字节相同再按连接数，最后按名字定序（结果稳定可测）。
+func groupRuleGaps(hosts []store.FallthroughHost) ([]ruleGap, []store.FallthroughHost) {
+	idx := make(map[string]int, len(hosts))
+	gaps := []ruleGap{}
+	ips := []store.FallthroughHost{}
+
+	for _, h := range hosts {
+		domain, ok := tracker.RegistrableDomain(h.Host)
+		if !ok {
+			ips = append(ips, h)
+			continue
+		}
+		i, seen := idx[domain]
+		if !seen {
+			i = len(gaps)
+			idx[domain] = i
+			gaps = append(gaps, ruleGap{Domain: domain, Hosts: []store.FallthroughHost{}})
+		}
+		g := &gaps[i]
+		g.Conns += h.Conns
+		g.Bytes += h.Bytes
+		g.Hosts = append(g.Hosts, h)
+		if h.LastTS.After(g.LastTS) {
+			g.LastTS = h.LastTS // 组的「最后兜底」取组内最晚的那次
+		}
+	}
+
+	byWeight := func(ac, ab int64, an string, bc, bb int64, bn string) bool {
+		if ab != bb {
+			return ab > bb
+		}
+		if ac != bc {
+			return ac > bc
+		}
+		return an < bn
+	}
+	sort.SliceStable(gaps, func(a, b int) bool {
+		return byWeight(gaps[a].Conns, gaps[a].Bytes, gaps[a].Domain,
+			gaps[b].Conns, gaps[b].Bytes, gaps[b].Domain)
+	})
+	for i := range gaps {
+		hs := gaps[i].Hosts
+		sort.SliceStable(hs, func(a, b int) bool {
+			return byWeight(hs[a].Conns, hs[a].Bytes, hs[a].Host, hs[b].Conns, hs[b].Bytes, hs[b].Host)
+		})
+	}
+	sort.SliceStable(ips, func(a, b int) bool {
+		return byWeight(ips[a].Conns, ips[a].Bytes, ips[a].Host, ips[b].Conns, ips[b].Bytes, ips[b].Host)
+	})
+	return gaps, ips
 }
