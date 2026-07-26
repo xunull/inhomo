@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useSearchParams, useNavigate, Link } from 'react-router'
+import { useSearchParams, useNavigate } from 'react-router'
 import { Alert, Button, Card, Collapse, Divider, Select, Space, Table, Tag, Typography } from 'antd'
 import {
   getNewChannels,
@@ -139,8 +139,8 @@ export default function NewPage() {
   return (
     <>
       <Space wrap align="center" style={{ marginBottom: 16 }}>
-        <Link to="/">← 仪表盘</Link>
-        <Text type="secondary">/ 新增</Text>
+        {/* 顶级页面的身份与返回由 Header 导航承担（当前项已高亮），此处不再重复。
+            钻取页 /detail、/d/:dim 不在导航里，它们各自保留返回条。 */}
         <Text type="secondary">时间窗</Text>
         <Select value={validSince} onChange={setSince} options={NEW_WINDOWS} style={{ width: 130 }} />
         <Button onClick={() => setRefreshKey((k) => k + 1)}>立即刷新</Button>

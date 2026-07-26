@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useSearchParams, Link } from 'react-router'
+import { useSearchParams } from 'react-router'
 import { Button, Card, Col, Row, Segmented, Select, Space, Statistic, Tag, Typography } from 'antd'
 import {
   getTrafficTotals,
@@ -57,8 +57,8 @@ export default function TrafficPage() {
   return (
     <>
       <Space wrap align="center" style={{ marginBottom: 16 }}>
-        <Link to="/">← 仪表盘</Link>
-        <Text type="secondary">/ 流量</Text>
+        {/* 顶级页面的身份与返回由 Header 导航承担（当前项已高亮），此处不再重复。
+            钻取页 /detail、/d/:dim 不在导航里，它们各自保留返回条。 */}
         {chips.map((c) => (
           <Tag key={c.key} color="blue">
             {c.label}：{c.value}
