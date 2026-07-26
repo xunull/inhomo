@@ -66,18 +66,17 @@ export default function KpiBar({
             })}
             {isWholeSet && (
               <Col xs={12} sm={8} md={6} xl={3}>
-                {/* /new 的入口：数字本身就是钩子——「24h 新增 254」比一个「新增」链接更容易被点。 */}
+                {/* 与同排其余 KPI 一样：可点即钻取（点数字看它背后是哪些），不额外着色、不加箭头。
+                    此前是红色 + 「→」——红色在本界面是危险语义（追踪器暴露那条进度条），
+                    而「新增 183」不是危险状态；箭头则是 /new 尚无导航入口时的补偿，
+                    现在顶级导航已承担该职责，留着只会让同类操作有两种长相。 */}
                 <Card
                   size="small"
                   hoverable
                   style={{ cursor: 'pointer' }}
                   onClick={() => navigate('/new?since=24h')}
                 >
-                  <Statistic
-                    title="24h 新增 →"
-                    value={newCount.data ? newCount.data.count : '—'}
-                    valueStyle={{ color: '#d4380d' }}
-                  />
+                  <Statistic title="24h 新增" value={newCount.data ? newCount.data.count : '—'} />
                 </Card>
               </Col>
             )}
