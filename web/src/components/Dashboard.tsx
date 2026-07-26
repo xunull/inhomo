@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
-import { Row, Col, Select, Switch, Button, Space, Flex, Typography } from 'antd'
+import { Row, Col, Select, Switch, Button, Space, Flex, Divider, Typography } from 'antd'
 import { topologyPath, trafficPath, isFilterable, type AggDimension, type Filter } from '../api'
 import KpiBar from './KpiBar'
 import AggPanel from './AggPanel'
@@ -61,6 +61,8 @@ export default function Dashboard({
   }, [auto])
 
   const bucket = WINDOWS.find((w) => w.value === since)?.bucket ?? '5m'
+  // 全集切片 = 主页；非空 = 详情页。决定要不要出「本切片的…」这类上下文跳转。
+  const isWholeSet = Object.keys(filter).length === 0
   // 隐藏被精确过滤钉死的维度面板（只剩一个值的分布没意义）。
   // 不可过滤的维度（规则）永远不会被钉死，故恒显示。
   const shown = (p: Panel) => !isFilterable(p.by) || filter[p.by] == null
@@ -73,11 +75,17 @@ export default function Dashboard({
         <Space>
           <Text type="secondary">时间窗</Text>
           <Select value={since} onChange={setSince} options={WINDOWS} style={{ width: 130 }} />
-          {/* 主页 → 全量；详情页（filter 非空）→ 当前切片。带当前时间窗。 */}
-          <Link to={trafficPath(filter, since)}>流量 →</Link>
-          <Link to={topologyPath(filter, since)}>流量拓扑 →</Link>
-          {/* 规则缺口不接过滤切片（规则是全局配置），故不带 filter/since 参数。 */}
-          <Link to="/gaps">规则缺口 →</Link>
+          {/* 顶级视图的入口统一在 Header 导航里。这里只在**详情页**（切片非空）保留带切片的
+              跳转——「看这个切片的流量/拓扑」是全局导航给不了的动作；在主页它们与 Header
+              完全重复，故不出现。分隔线把「改变本页的控件」和「离开本页的链接」分开：
+              二者混排会让人以为换时间窗和点流量是同一类操作。 */}
+          {!isWholeSet && (
+            <>
+              <Divider type="vertical" style={{ margin: 0 }} />
+              <Link to={trafficPath(filter, since)}>本切片的流量</Link>
+              <Link to={topologyPath(filter, since)}>本切片的拓扑</Link>
+            </>
+          )}
         </Space>
         <Space>
           <Switch checked={auto} onChange={setAuto} checkedChildren="自动" unCheckedChildren="手动" />

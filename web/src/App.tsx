@@ -8,6 +8,7 @@ import DimensionOverview from './components/DimensionOverview'
 import TrafficPage from './components/TrafficPage'
 import NewPage from './components/NewPage'
 import GapsPage from './components/GapsPage'
+import HeaderNav from './components/HeaderNav'
 
 // 拓扑页懒加载：echarts 随它单独成 chunk，不进主仪表盘首屏包。
 const TopologyPage = lazy(() => import('./components/TopologyPage'))
@@ -21,12 +22,15 @@ export default function App() {
   return (
     <BrowserRouter>
       <Layout style={{ minHeight: '100vh' }}>
-        <Header style={{ display: 'flex', alignItems: 'center' }}>
-          <Title level={4} style={{ color: '#fff', margin: 0 }}>
+        {/* Header 同时承载「站点身份」与「顶级导航」——这是最显眼、且每页都在的持久表面，
+            此前只放了一句标题。站点名固定在左（点击回主页），导航紧随其后。 */}
+        <Header style={{ display: 'flex', alignItems: 'center', gap: 24, paddingInline: 24 }}>
+          <Title level={4} style={{ color: '#fff', margin: 0, whiteSpace: 'nowrap', flex: 'none' }}>
             <Link to="/" style={{ color: '#fff' }}>
-              inhomo · 连接分析
+              inhomo
             </Link>
           </Title>
+          <HeaderNav />
         </Header>
         <Content style={{ padding: 24 }}>
           <Routes>
